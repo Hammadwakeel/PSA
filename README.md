@@ -56,7 +56,7 @@ Create a `.env` file in the root directory:
 
 ```env
 GROQ_API_KEY=your_api_key_here
-MODEL_NAME=meta-llama/llama-3.3-70b-versatile
+MODEL_NAME=openai/gpt-oss-120b
 ```
 
 ### 3. Run the Application
