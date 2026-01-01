@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # ==============================================================================
@@ -29,15 +29,20 @@ class TableType(str, Enum):
     CSV = "csv"
 
 # ==============================================================================
-# 2. SCHEMA DEFINITIONS (Strict Validation)
+# 2. SCHEMA DEFINITIONS
 # ==============================================================================
 class ColumnSchema(BaseModel):
-    model_config = ConfigDict(extra='forbid') 
+    # CHANGED: 'ignore' allows extra fields (like 'comment') without crashing
+    model_config = ConfigDict(extra='ignore') 
 
     column_name: str = Field(..., min_length=1, description="Name of the column")
     column_type: str = Field(..., description="Native data type (e.g. VARCHAR, INTEGER)")
+    
+    # ✅ FIXED: Added missing fields from your payload
     is_primary_key: bool = Field(False, description="Is this the PK?")
+    is_foreign_key: bool = Field(False, description="Is this a FK?")
     is_nullable: bool = Field(True, description="Can this be null?")
+    pii: bool = Field(False, description="Contains Personally Identifiable Information?")
 
 class TableSchema(BaseModel):
     table_name: str = Field(..., min_length=1)
@@ -54,9 +59,17 @@ class SchemaDetails(BaseModel):
 # ==============================================================================
 # 3. GOVERNANCE (Policy Models)
 # ==============================================================================
+class RLSRule(BaseModel):
+    """
+    Structured definition for a Row Level Security rule.
+    """
+    condition: str = Field(..., description="SQL predicate (e.g. region = 'US')")
+    description: Optional[str] = Field(None, description="Human readable explanation")
+
 class GovernanceRLS(BaseModel):
     enabled: bool = False
-    rules: List[str] = Field(default_factory=list, description="SQL predicates for RLS")
+    # ✅ FIXED: Now supports simple strings OR structured rule objects
+    rules: List[Union[RLSRule, str]] = Field(default_factory=list, description="List of RLS rules")
 
 class GovernanceMasking(BaseModel):
     enabled: bool = False
@@ -84,8 +97,8 @@ class DataSource(BaseModel):
 # 5. CONTEXT & REQUEST
 # ==============================================================================
 class ExecutionContext(BaseModel):
-    max_rows: int = Field(1000, ge=1, le=100000, description="Safety limit for rows returned")
-    timeout_seconds: int = Field(30, ge=5, le=300, description="Query execution timeout")
+    max_rows: int = Field(1000, ge=1, le=100000)
+    timeout_seconds: int = Field(30, ge=5, le=300)
 
 class UserContext(BaseModel):
     user_id: int = Field(..., gt=0)
@@ -129,13 +142,15 @@ class ExecutionRequest(BaseModel):
         return v
 
 # ==============================================================================
-# 6. RESPONSE SCHEMA (Fix for ImportError)
+# 6. RESPONSE SCHEMA
 # ==============================================================================
 class AIMetadata(BaseModel):
     generation_time_ms: int
     confidence_score: float
     explanation: Optional[str] = None
     reasoning_steps: List[str] = []
+    # Added model field to match agent output
+    model: Optional[str] = None 
 
 class ExecutionResponse(BaseModel):
     """
@@ -144,7 +159,6 @@ class ExecutionResponse(BaseModel):
     request_id: str
     status: str = Field(..., description="success, error, or partial")
     
-    # Optional because error responses won't have plans
     execution_id: Optional[str] = None
     plan_id: Optional[str] = None
     timestamp: Optional[str] = None
@@ -152,12 +166,10 @@ class ExecutionResponse(BaseModel):
     intent_type: Optional[str] = None
     intent_summary: Optional[str] = None
     
-    # We use Dict for execution_plan as it varies by Agent (SQL vs Vector vs Stream)
     execution_plan: Optional[Dict[str, Any]] = None 
     
     visualization: Optional[List[Dict[str, Any]]] = None
     ai_metadata: Optional[AIMetadata] = None
     suggestions: List[str] = []
     
-    # Error Handling
     error: Optional[str] = None

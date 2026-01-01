@@ -45,6 +45,7 @@ def clean_and_parse_json(raw_content: str) -> Dict[str, Any]:
 def router_agent(full_payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Analyzes input to route requests.
+    Includes token usage tracking for cost observability.
     """
     # ✅ Initialize Client & Config at Runtime
     client = get_groq_client()
@@ -106,20 +107,43 @@ def router_agent(full_payload: Dict[str, Any]) -> Dict[str, Any]:
         raw_response = completion.choices[0].message.content
         result = clean_and_parse_json(raw_response)
         
+        # ✅ CAPTURE TOKENS
+        # We extract usage stats directly from the completion object
+        usage_stats = {
+            "input_tokens": completion.usage.prompt_tokens,
+            "output_tokens": completion.usage.completion_tokens,
+            "total_tokens": completion.usage.total_tokens
+        }
+        
+        # Inject usage into the result dictionary
+        result["usage"] = usage_stats
+        
         duration = (time.time() - start_time) * 1000
         logger.info(f"👉 [Router] Selected: {result.get('selected_agent')} - {duration:.2f}ms")
+        
         return result
 
     except Exception as e:
         logger.error(f"Router Agent Failed: {str(e)}", exc_info=True)
+        
+        # Define empty usage for fallback scenarios
+        empty_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        
         # Fallback Logic
         if len(data_sources) > 1:
-            return {"selected_agent": "multi_source_agent", "confidence": 0.5, "reasoning": "Fallback: Multiple sources."}
-        return {"error": "Routing Failed", "selected_agent": "error_handler"}
+            return {
+                "selected_agent": "multi_source_agent", 
+                "confidence": 0.5, 
+                "reasoning": "Fallback: Multiple sources.",
+                "usage": empty_usage
+            }
+            
+        return {
+            "error": "Routing Failed", 
+            "selected_agent": "error_handler",
+            "usage": empty_usage
+        }
     
-# ==============================================================================
-# 2. STREAM AGENT (Hardened for Kafka/Kinesis Analytics)
-# ==============================================================================
 # ==============================================================================
 # 2. STREAM AGENT (Hardened for Kafka/Kinesis Analytics)
 # ==============================================================================
@@ -640,9 +664,6 @@ def vector_store_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
 # ==============================================================================
 # 5. MULTI-SOURCE AGENT (Federated Trino/ANSI SQL)
 # ==============================================================================
-# ==============================================================================
-# 5. MULTI-SOURCE AGENT (Federated Trino/ANSI SQL)
-# ==============================================================================
 def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
     """
     Step 3/4 (Branch B): Generates a Hybrid/Federated Execution Plan.
@@ -746,29 +767,27 @@ def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
 
         # 3. System Prompt
         system_prompt = f"""
-        You are the **Multi-Source Agent** for RiverGen AI. 
+        You are the **Multi-Source Agent** for RiverGen AI.
         
         **OBJECTIVE:**
-        Generate a **Hybrid Execution Plan** to join/federate data across multiple sources.
-        
-        **STRATEGY:**
-        1. **Fetch**: Create separate `read` operations for each data source.
-        2. **Join**: Create a final `join` operation (compute_type: 'internal', compute_engine: 'duckdb').
+        Generate a **Hybrid Execution Plan** to federate data.
         
         **INPUT CONTEXT:**
-        - User Prompt: "{payload.get('user_prompt')}"
-        - Context Literals: {json.dumps(context_vars)}
-        - Available Schema:
-        {chr(10).join(schema_summary)}
-        - Governance:
-        {chr(10).join(governance_instructions) if governance_instructions else "None."}
+        - Schema: {chr(10).join(schema_summary)}
+        - Governance: {chr(10).join(governance_instructions) if governance_instructions else "None."}
+        - Literals: {json.dumps(context_vars)}
 
         **CRITICAL RULES:**
-        1. **No System Tables**: `user_access` is NOT a real table. Do not put it in a `FROM` or `JOIN` clause. Use literal values or a CTE if needed.
-        2. **Multi-Hop Joins**: If tables A and C don't share a key, check if table B links them (e.g., `Orders` -> `Order_Items` -> `Products`). Do NOT make up keys.
-        3. **Plan Type**: Must be `trino_sql`.
-        4. **Governance**: RLS injection is MANDATORY in the read step.
-
+        1. **Topology Check**: 
+           - If `Orders` table lacks `product_id`, DO NOT join it to `Products`.
+           - Instead, calculate "Customer Metrics" (Orders+Customers) and "Product Metrics" (Sales+Products) as **separate operations**.
+        
+        2. **System Tables**: 
+           - Replace `user_access` with the literal values provided in context (e.g., `WHERE region = '...'`).
+        
+        3. **Addressing**: 
+           - Use Fully Qualified Names: `datasource_name.schema_name.table_name` (e.g. `postgresql_production.public.customers`).
+        
         **OUTPUT FORMAT:**
         Return ONLY a valid JSON object matching the Lean Template exactly.
         {json.dumps(lean_template, indent=2)}
@@ -898,7 +917,10 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
         
         # 3. Specialized Prompts
         multi_source_judge_prompt = f"""
-    You are the **Multi-Source Federation Judge** for RiverGen AI. You validate federated execution plans that combine data across SQL databases, NoSQL databases, and cloud storage (S3, Parquet, Snowflake, etc.).
+    You are the **Multi-Source Federation Judge** for RiverGen AI. 
+    
+    
+    You validate federated execution plans that combine data across SQL databases, NoSQL databases, and cloud storage (S3, Parquet, Snowflake, etc.).
 
     INPUT:
     1. User Prompt:
@@ -927,18 +949,19 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
     - No unsafe operations (e.g., unqualified cross joins, unsupported NoSQL filters).
 
     ─────────────────────────────
-    3) GOVERNANCE & RLS
+    3) GOVERNANCE & RLS (CRITICAL UPDATE)
     ─────────────────────────────
     - RLS, masking, or row-level filters must be applied where required.
+    - **VALIDATION EXCEPTION**: If the plan replaces a system table reference (e.g., `user_access`) with a **Literal Filter** (e.g., `WHERE region = 'US-East'`) or a **CTE/VALUES clause**, this IS VALID. Do NOT reject it for missing the system table.
     - Enforcement should be pushed down into the query if supported.
     - If RLS is missing for a source that requires it → REJECT.
-    - Explain governance application in `governance_enforcement`.
 
     ─────────────────────────────
     4) FEDERATION & JOIN LOGIC
     ─────────────────────────────
-    - If multiple sources have a common business key, queries should JOIN/UNION data.
-    - If no join key exists, generate separate operations with `"SAFE_PARTIAL": true` and document in `limitations`.
+    - **Topology Check**: Do NOT allow joins if the schema does not support them (e.g., joining `Orders` to `Products` without a `product_id` key).
+    - **No Cross Joins**: Unqualified joins (Cartesian products) are strictly FORBIDDEN.
+    - If no join key exists, the plan MUST generate separate operations or use `"SAFE_PARTIAL": true` and document in `limitations`.
     - Metrics requested by the user must be computed when possible; otherwise, explain in `limitations`.
 
     ─────────────────────────────
@@ -965,7 +988,6 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
     }}
     Do NOT include any extra text.
     """
-
 
         vector_judge_prompt = f"""
     You are the **Vector Store Judge** for RiverGen AI. You validate vector similarity search plans (Pinecone, Weaviate, etc.).
@@ -1174,21 +1196,33 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
 
         # 5. Call LLM
         completion = client.chat.completions.create(
-            model=config.MODEL_NAME, # ✅ Use config.MODEL_NAME
+            model=config.MODEL_NAME,
             messages=[{"role": "system", "content": system_prompt}],
             temperature=0,
             response_format={"type": "json_object"}
         )
 
-        return clean_and_parse_json(completion.choices[0].message.content)
+        # 1. Parse content first
+        result = clean_and_parse_json(completion.choices[0].message.content)
+
+        # 2. Add usage stats (Safe now because result is a dict)
+        result["usage"] = {
+            "input_tokens": completion.usage.prompt_tokens,
+            "output_tokens": completion.usage.completion_tokens,
+            "total_tokens": completion.usage.total_tokens
+        }
+
+        # 3. Return the complete object
+        return result
 
     except Exception as e:
         logger.error(f"Judge Logic Error: {e}", exc_info=True)
-        return {"approved": False, "feedback": f"Judge Logic Error: {str(e)}"}
-    
-################################################################################
-# 7. NOSQL AGENT (NoSQL/Document DB Specialist)
-################################################################################
+        # Ensure fallback return structure matches the success structure
+        return {
+            "approved": False, 
+            "feedback": f"Judge Logic Error: {str(e)}",
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        }
 # ==============================================================================
 # 7. NOSQL AGENT (NoSQL/Document DB Specialist)
 # ==============================================================================
