@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python bytecode
 __pycache__/
 *.py[cod]
@@ -20,3 +21,10 @@ build/
 
 # Logs
 *.log
+=======
+.venv/
+__pycache__/
+*.pyc
+*.so
+.env
+>>>>>>> 7e431a1 (Initial clean deployment: removed binary bloat)
