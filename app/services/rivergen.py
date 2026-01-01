@@ -1,80 +1,115 @@
 import time
+import logging
+from typing import Dict, Any, Optional
+
+# Import agents
 from app.core.agents import (
     router_agent, sql_agent, nosql_agent, multi_source_agent, 
     big_data_agent, ml_agent, vector_store_agent, stream_agent, llm_judge
 )
 
-def run_rivergen_flow(payload):
+# 1. Setup Structured Logging
+# This ensures logs appear in Datadog/CloudWatch with the correct severity
+logger = logging.getLogger("rivergen.orchestrator")
+logging.basicConfig(level=logging.INFO)
+
+# 2. Agent Registry (Constant)
+# Defined globally to avoid recreating it on every request
+AGENT_MAPPING = {
+    "sql_agent": sql_agent,
+    "nosql_agent": nosql_agent,
+    "multi_source_agent": multi_source_agent,
+    "big_data_agent": big_data_agent,
+    "ml_agent": ml_agent,
+    "vector_store_agent": vector_store_agent,
+    "stream_agent": stream_agent
+}
+
+def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main workflow orchestrator that manages the Routing -> Execution -> Judging loop.
+    Main workflow orchestrator: Routing -> Execution -> Judging Loop.
+    Hardened for production observability and error resilience.
     """
-    print(f"\n{' STARTING RIVERGEN FLOW ':=^60}")
+    request_id = payload.get("request_id", "unknown_id")
+    start_time = time.time()
+    
+    logger.info(f"🚀 [Orchestrator] Starting Flow for Request ID: {request_id}")
 
-    # --- Step 1 & 2: Router Agent ---
-    router_output = router_agent(payload)
+    try:
+        # --- Step 1: Router Agent ---
+        router_output = router_agent(payload)
 
-    if "error" in router_output:
-        return {"error": router_output["error"]}
+        if "error" in router_output:
+            logger.error(f"⛔ [Router Error] {request_id}: {router_output['error']}")
+            return {"status": "error", "error": router_output["error"]}
 
-    agent_name = router_output.get("selected_agent")
-    confidence = router_output.get("confidence", "N/A")
-    print(f"🧭 [Router] Selected: {agent_name} (Confidence: {confidence})")
-    print(f"   Reasoning: {router_output.get('reasoning')}")
+        agent_name = router_output.get("selected_agent")
+        confidence = router_output.get("confidence", 0.0)
+        
+        logger.info(f"🧭 [Router] {request_id} -> Selected: {agent_name} (Conf: {confidence})")
 
-    # --- Agent Dispatcher ---
-    # Mapping the router's string output to actual function references
-    agent_mapping = {
-        "sql_agent": sql_agent,
-        "nosql_agent": nosql_agent,
-        "multi_source_agent": multi_source_agent,
-        "big_data_agent": big_data_agent,
-        "ml_agent": ml_agent,
-        "vector_store_agent": vector_store_agent,
-        "stream_agent": stream_agent
-    }
+        # --- Step 2: Agent Dispatch ---
+        agent_func = AGENT_MAPPING.get(agent_name)
+        if not agent_func:
+            error_msg = f"Agent '{agent_name}' is not supported."
+            logger.critical(f"❌ [Dispatcher] {error_msg}")
+            return {"status": "error", "error": error_msg}
 
-    agent_func = agent_mapping.get(agent_name)
+        # --- Step 3-5: Generation & Validation Loop ---
+        max_retries = 3
+        current_feedback = None
 
-    if not agent_func:
-        return {"error": f"Agent '{agent_name}' is not defined or supported."}
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"🔄 [Attempt {attempt}/{max_retries}] Agent '{agent_name}' working...")
 
-    print(f"👉 [Dispatcher] Handing off to: {agent_name.upper()}")
-
-    # --- Step 3, 4, 5: Generation & Validation Loop ---
-    max_retries = 3
-    current_feedback = None
-
-    for attempt in range(max_retries):
-        print(f"\n--- Attempt {attempt + 1}/{max_retries} ---")
-
-        try:
-            # Step 3 & 4: Generate Plan with optional feedback for self-correction
+            # A. Generate Plan
             plan = agent_func(payload, feedback=current_feedback)
             
-            if "error" in plan:
-                print(f"⚠️ [Agent Error]: {plan['error']}")
+            # Check for Agent Crash
+            if plan.get("error"):
+                logger.warning(f"⚠️ [Agent Crash] Attempt {attempt} failed: {plan['error']}")
                 current_feedback = f"Agent crashed with error: {plan['error']}"
                 continue
 
-            # Step 5: LLM Judge Validation
+            # B. Validate Plan (Judge)
             review = llm_judge(payload, plan)
 
             if review.get('approved'):
-                print(f"✅ [Judge] Plan Approved!")
-                return plan 
+                duration = time.time() - start_time
+                logger.info(f"✅ [Judge] Plan Approved for {request_id} in {duration:.2f}s")
+                
+                # C. Inject Execution Metadata
+                plan["meta"] = {
+                    "attempts_used": attempt,
+                    "processing_time_ms": int(duration * 1000),
+                    "router_confidence": confidence,
+                    "judge_score": review.get("score", 1.0)
+                }
+                return plan
 
             else:
-                print(f"❌ [Judge] Rejected.")
-                print(f"   Feedback: {review.get('feedback')}")
-                current_feedback = review.get('feedback')
-                print("🔄 Looping back to Agent for correction...")
-                time.sleep(1) 
+                feedback = review.get('feedback', 'Unknown rejection reason.')
+                logger.info(f"❌ [Judge] Rejected attempt {attempt}. Feedback: {feedback}")
+                current_feedback = feedback
+                
+                # Optional: Add small backoff if hitting rate limits
+                # time.sleep(0.5)
 
-        except Exception as e:
-             return {"error": f"CRITICAL: Workflow failed on {agent_name}: {str(e)}"}
+        # --- Final Failure State ---
+        logger.error(f"💀 [Failed] {request_id} exhausted {max_retries} attempts.")
+        return {
+            "status": "error",
+            "error": "Plan generation failed validation after maximum retries.",
+            "last_feedback": current_feedback,
+            "request_id": request_id
+        }
 
-    return {
-        "status": "error",
-        "error": "Plan generation failed after max retries.",
-        "last_feedback": current_feedback
-    }
+    except Exception as e:
+        # Catch-all for unexpected crashes (e.g., memory errors, timeouts)
+        logger.exception(f"🔥 [System Panic] Critical workflow failure for {request_id}")
+        return {
+            "status": "error", 
+            "error": "Internal Orchestration Error. Please check logs.",
+            "details": str(e),
+            "request_id": request_id
+        }

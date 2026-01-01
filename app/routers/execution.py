@@ -1,34 +1,56 @@
-from fastapi import APIRouter, HTTPException
-from app.schemas.payload import ExecutionRequest
+import logging
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.concurrency import run_in_threadpool # 👈 Key for fixing blocking calls
+from app.schemas.payload import ExecutionRequest, ExecutionResponse # Assuming you have a Response schema
 from app.services.rivergen import run_rivergen_flow
 
-# Initialize the router with a specific tag for documentation
+# 1. Setup Structured Logging
+logger = logging.getLogger("api_execution")
+
 router = APIRouter(tags=["Execution"])
 
-@router.post("/execute")
+@router.post(
+    "/execute", 
+    response_model=dict, # Better: Replace 'dict' with actual Pydantic schema 'ExecutionResponse'
+    summary="Execute AI Flow",
+    description="Processes natural language prompts via the RiverGen Engine."
+)
 async def execute_prompt(request: ExecutionRequest):
     """
     Primary endpoint to process natural language prompts against data sources.
-    
-    Flow: 
-    1. Validate input via Pydantic.
-    2. Route to specialized agent (SQL, Stream, Vector, etc.).
-    3. Generate and validate execution plan via Judge loop.
+    Uses threadpooling to prevent blocking the async event loop.
     """
+    request_id = request.request_id or "unknown"
+    logger.info(f"🚀 [API] Received execution request: {request_id}")
+
     try:
-        # Convert Pydantic model to a standard dictionary for the service layer
+        # Convert Pydantic model to dict
         payload = request.model_dump()
         
-        # Trigger the RiverGen orchestration flow
-        result = run_rivergen_flow(payload)
+        # ------------------------------------------------------------------
+        # ⚡ CRITICAL FIX: Run Blocking Code in Threadpool
+        # ------------------------------------------------------------------
+        # Since 'run_rivergen_flow' is CPU/IO bound and synchronous,
+        # we offload it to a worker thread so the main Async loop stays alive.
+        result = await run_in_threadpool(run_rivergen_flow, payload)
         
-        # If the workflow returned an error status, raise a 400 or 500 exception
-        if "error" in result or result.get("status") == "error":
+        # Check logical errors from the service layer
+        if result.get("status") == "error" or "error" in result:
             error_msg = result.get("error", "Unknown processing error")
+            logger.warning(f"⚠️ [API] Logic Error for {request_id}: {error_msg}")
             raise HTTPException(status_code=400, detail=error_msg)
             
+        logger.info(f"✅ [API] Success for {request_id}")
         return result
 
+    except HTTPException:
+        # Re-raise HTTP exceptions so they propagate correctly
+        raise
+
     except Exception as e:
-        # Catch unexpected failures and return a 500 Internal Server Error
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+        # 🔒 SECURITY FIX: Log the real error, hide it from user
+        logger.error(f"❌ [API] System Crash for {request_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail="Internal Server Error. Please contact support with Request ID."
+        )
