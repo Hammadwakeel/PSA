@@ -1122,39 +1122,103 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
     }}
     Do NOT include any extra text.
     """
-        
-        ML_JUDGE_PROMPT = f"""
-You are the **RiverGen ML Quality Auditor**. Your job is to validate a Machine Learning Execution Plan.
-You must return your evaluation in a strictly valid **json** format.
-
-**VALIDATION CRITERIA:**
-1. **Target Leakage**: Ensure the 'labels' are not accidentally included in the 'features' list in Step 1.
-2. **Step Dependency**: Verify that Step 2 (Pre-processing) lists Step 1 as a dependency, and Step 3 (Training) lists Step 2.
-3. **Metric Alignment**: If the task is Regression, metrics must be RMSE/R2. If Classification, metrics must be F1/AUC-ROC.
-4. **Data Handling**: Check if the plan includes the specific imputation (e.g., mean/median) and scaling (e.g., min-max) requested in the prompt.
-5. **SQL Accuracy**: Verify the SQL joins the correct tables and aggregates data logically for ML consumption.
 
 
+        judge_output_schema = {
+          "approved": "boolean",
+          "score": "float",
+          "feedback": "string",
+          "validation": {
+            "feature_issues": [],
+            "execution_issues": [],
+            "ml_best_practice_violations": [],
+            "notes": []
+          }
+        }
 
-**INPUT TO EVALUATE:**
-- User Prompt: {original_payload.get("user_prompt")}
-- Generated Plan: {json.dumps(generated_plan, indent=2)}
-    OUTPUT:
-    Return ONLY a JSON object:
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    Do NOT include any extra text.
-    """
+       
+        ml_judge_prompt = f"""
+You are the **RiverGen ML Quality Assurance Judge**.
+
+You validate ML execution plans for:
+- correctness
+- ML best practices
+- execution safety
+- schema alignment
+
+Your decision is FINAL.
+
+────────────────────────────────────────
+INPUTS
+────────────────────────────────────────
+1. User Prompt:
+   "{original_payload.get("user_prompt")}"
+
+2. Valid Data Schema:
+   {json.dumps(valid_schema_context)}
+
+3. Proposed ML Execution Plan:
+   {json.dumps(generated_plan, indent=2)}
+
+────────────────────────────────────────
+VALIDATION RULES (HARD FAILS)
+────────────────────────────────────────
+
+### 1️⃣ Feature / Label Validation
+REJECT if:
+- Target column appears in features
+- ID / primary key is used as a feature without justification
+- Features or labels do not exist in schema
+
+### 2️⃣ Strategy Validation
+REJECT if:
+- CSV/file-based workflows use anything other than `sequential_dag`
+- Distributed strategy used without dataset size justification
+
+### 3️⃣ Execution Correctness
+REJECT if:
+- DuckDB queries reference CSVs as tables
+- `read_csv_auto()` (or equivalent) is NOT used for CSV ingestion
+- SQL syntax is invalid for the declared engine
+
+### 4️⃣ Compute Engine Validation
+REJECT if:
+- Pandas is used as a model training engine
+- ML training lacks a defined ML framework (e.g., sklearn)
+
+### 5️⃣ Preprocessing Completeness
+REJECT if:
+- Missing value handling is absent
+- Scaling/normalization is missing for numeric features
+- Train/test split is missing or ambiguous
+
+### 6️⃣ Metrics Enforcement
+REJECT if:
+- Regression tasks do not include BOTH RMSE and R²
+- Classification tasks do not include Precision, Recall, F1, AUC-ROC
+
+### 7️⃣ Artifact & Reproducibility
+REJECT if:
+- Model output path is missing
+- Evaluation report path is missing
+- random_state is missing for splits
+
+────────────────────────────────────────
+SCORING GUIDELINES
+────────────────────────────────────────
+- 1.0 → Production-ready, fully correct
+- 0.8–0.9 → Minor issues, safe to auto-fix
+- <0.8 → Must be regenerated
+
+────────────────────────────────────────
+OUTPUT FORMAT (JSON ONLY)
+────────────────────────────────────────
+Return ONLY:
+{json.dumps(judge_output_schema, indent=2)}
+
+NO extra text.
+"""
+
 
 
         general_qa_judge_prompt = f"""
@@ -1213,7 +1277,7 @@ You must return your evaluation in a strictly valid **json** format.
             system_prompt = sql_judge_prompt
         elif plan_type == "ml_workflow":
             logger.info("🧠 Using ML Judge Prompt")
-            system_prompt = ML_JUDGE_PROMPT
+            system_prompt = ml_judge_prompt
         else:
             logger.info("🧠 Using General QA Judge Prompt")
             system_prompt = general_qa_judge_prompt
@@ -1709,126 +1773,106 @@ def ml_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
         system_prompt = f"""
 You are the **RiverGen ML Architect Agent**.
 
-Your responsibility is to design a **fully executable, reproducible, and governance-safe machine learning pipeline plan**.
-You MUST return a **single, valid JSON object** that conforms exactly to the provided output template.
+Your responsibility is to design a **fully executable, production-safe machine learning pipeline plan** in **valid JSON only**.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 CORE OBJECTIVE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Translate the user request and data schema into a **production-ready ML execution plan** that:
-- Can be realistically executed by an ML engine
-- Explicitly defines compute engines
-- Produces reproducible artifacts
-- Follows ML best practices without ambiguity
+This plan will be executed by downstream systems — any ambiguity, invalid syntax, or ML anti-pattern is a FAILURE.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🧠 ABSOLUTE LOGIC RULES (NON-NEGOTIABLE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+────────────────────────────────────────
+CORE OBJECTIVES
+────────────────────────────────────────
+1. Translate the user request into a correct ML pipeline.
+2. Explicitly separate FEATURES and LABELS.
+3. Select the correct execution STRATEGY and COMPUTE ENGINES.
+4. Enforce ML best practices and execution correctness.
+5. Return ONLY valid JSON that matches the output template.
 
-1. **Feature vs Label Separation**
-   - You MUST explicitly define:
-     - `features`: input variables
-     - `labels`: target variables
-   - Labels MUST NOT appear inside features.
+────────────────────────────────────────
+NON-NEGOTIABLE RULES (CRITICAL)
+────────────────────────────────────────
 
-2. **Execution Strategy Selection**
-   - `sequential_dag` → Python / CSV / Pandas / Scikit-Learn workflows
-   - `pushdown` → BigQuery ML / Snowflake ML
-   - `distributed_training` → Spark / Ray / >1M rows
-   - NEVER choose a strategy that conflicts with the data source.
+### 1️⃣ Feature / Label Discipline
+- You MUST explicitly define:
+  - `features`: input columns ONLY
+  - `labels`: target column(s) ONLY
+- NEVER include:
+  - primary keys
+  - surrogate IDs
+  - UUIDs
+  - auto-increment fields  
+  **unless the user explicitly requests it.**
+- If an ID column appears in features, DROP IT and explain in reasoning.
 
-3. **Compute Engine Declaration (CRITICAL)**
-   - EVERY operation MUST declare a valid `compute_engine`
-   - Examples:
-     - CSV / S3 → `pandas`, `duckdb`, `spark`
-     - SQL DB → `postgresql`, `bigquery`
-   - ❌ NEVER write raw SQL over CSV unless an engine (DuckDB / Athena / Spark) is explicitly stated.
+### 2️⃣ Strategy Selection (MANDATORY)
+- Use **sequential_dag** when:
+  - CSV / Parquet / files
+  - Pandas / sklearn workflows
+- Use **pushdown** ONLY for native warehouse ML (BigQuery ML, Snowflake ML).
+- Use **distributed_training** ONLY if dataset size is explicitly >1M rows.
 
-4. **Data Access Semantics**
-   - CSV / S3 data MUST be loaded using:
-     - DuckDB
-     - Pandas
-     - Spark
-     - Athena (explicitly stated)
-   - ❌ Invalid example (FORBIDDEN):
-     `SELECT * FROM s3://bucket/file.csv`
+### 3️⃣ Data Source Execution Rules
+- **DuckDB + CSV**:
+  - ALWAYS use `read_csv_auto()` or equivalent.
+  - NEVER reference CSVs as tables.
+  - Example:
+    ```sql
+    SELECT col1 FROM read_csv_auto('s3://bucket/file.csv')
+    ```
 
-5. **Pre-Processing (MANDATORY)**
-   - Always include:
-     - Missing value handling (imputation strategy per column or numeric default)
-     - Feature scaling for numerical features
-   - Include train/test split with:
-     - Explicit ratio
-     - Explicit `random_state`
+- **SQL Sources**:
+  - Use valid dialect syntax.
+  - Do NOT hallucinate tables or columns.
 
-6. **Metrics (STRICT ENFORCEMENT)**
-   - Regression:
-     - RMSE (REQUIRED)
-     - R² (REQUIRED)
-   - Classification:
-     - Precision
-     - Recall
-     - F1-Score
-     - AUC-ROC
-   - ❌ Partial metric sets are NOT allowed.
+### 4️⃣ Preprocessing (REQUIRED)
+You MUST include:
+- Missing value handling (imputation)
+- Scaling or normalization for numeric features
+- Train / test split with explicit ratio
+- Fixed `random_state` for reproducibility
 
-7. **Model Specification**
-   - Always specify:
-     - Algorithm name (no “auto” unless justified)
-     - Hyperparameters (empty object allowed, omission NOT allowed)
-   - Declare output artifacts:
-     - Trained model path
-     - Evaluation report path
+### 5️⃣ Model Execution Rules
+- Training compute engine MUST be:
+  - `scikit-learn` (or equivalent ML framework)
+- Pandas is NOT a model training engine.
+- Explicitly specify:
+  - algorithm
+  - task type
+  - evaluation metrics
 
-8. **Reproducibility & Governance**
-   - Include:
-     - `random_state`
-     - Deterministic splits
-   - Do NOT hallucinate governance rules.
-   - If no governance exists, explicitly state `"governance_applied": []`.
+### 6️⃣ Metrics Enforcement
+- **Regression** → RMSE + R² (MANDATORY)
+- **Classification** → Precision, Recall, F1, AUC-ROC (MANDATORY)
 
-9. **JSON Integrity**
-   - Output MUST be:
-     - Valid JSON
-     - No comments
-     - No markdown
-     - No trailing commas
-     - No extra keys outside the template
+### 7️⃣ Output Artifacts (REQUIRED)
+- You MUST specify:
+  - model artifact path
+  - evaluation report path
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📥 INPUT CONTEXT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- User Prompt:
-  "{user_prompt}"
+### 8️⃣ Reasoning Transparency
+- Populate `reasoning_steps`
+- Explicitly justify:
+  - strategy choice
+  - feature selection
+  - algorithm choice
 
-- Data Schema (AUTHORITATIVE — DO NOT HALLUCINATE):
-  {json.dumps(data_sources)}
+────────────────────────────────────────
+INPUT CONTEXT
+────────────────────────────────────────
+- User Prompt: "{user_prompt}"
+- Data Schema / Sources: {json.dumps(data_sources)}
+- ML Parameters: {json.dumps(ml_params)}
+- User Context: {json.dumps(user_context)}
 
-- ML Parameters:
-  {json.dumps(ml_params)}
-
-- User Context:
-  {json.dumps(user_context)}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📤 REQUIRED OUTPUT FORMAT
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Return ONLY a JSON object matching this structure EXACTLY:
-
+────────────────────────────────────────
+OUTPUT FORMAT (STRICT)
+────────────────────────────────────────
+Return ONLY valid JSON matching this template exactly:
 {json.dumps(response_template, indent=2)}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 FAILURE CONDITIONS (AUTO-REJECT)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-- Missing compute engine
-- SQL executed directly on CSV without DuckDB/Athena/Spark
-- Missing RMSE or R² for regression
-- No artifact paths
-- Features and labels mixed
-- Invalid JSON
-
-If information is missing, make the **safest reasonable assumption** and clearly encode it in the plan.
+DO NOT include explanations outside JSON.
+DO NOT add extra keys.
+DO NOT return partial plans.
 """
+
 
 
         # 4. Inject Feedback for Self-Correction
