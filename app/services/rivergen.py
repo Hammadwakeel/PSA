@@ -1,4 +1,5 @@
 import time
+import json
 import logging
 from typing import Dict, Any, Optional
 
@@ -12,7 +13,7 @@ from app.core.agents import (
 logger = logging.getLogger("rivergen.orchestrator")
 logging.basicConfig(level=logging.INFO)
 
-# 2. Agent Registry (Constant)
+# 2. Agent Registry
 AGENT_MAPPING = {
     "sql_agent": sql_agent,
     "nosql_agent": nosql_agent,
@@ -26,7 +27,6 @@ AGENT_MAPPING = {
 def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Main workflow orchestrator: Routing -> Execution -> Judging Loop.
-    Hardened for production observability and error resilience.
     Tracks TOTAL token usage across all steps (Router + Agent Attempts + Judge).
     """
     request_id = payload.get("request_id", "unknown_id")
@@ -38,11 +38,32 @@ def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
     
     logger.info(f"🚀 [Orchestrator] Starting Flow for Request ID: {request_id}")
 
+    # ------------------------------------------------------------------
+    # ⚡ CRITICAL FIX: Normalize Data Sources for Blind Agents
+    # ------------------------------------------------------------------
+    if "data_sources" in payload:
+        logger.info(f"🛠️ [Orchestrator] Normalizing {len(payload['data_sources'])} data sources...")
+        
+        for i, source in enumerate(payload["data_sources"]):
+            # 1. Fix ID Mismatch (Agents might expect 'id' or 'source_id')
+            if "data_source_id" in source:
+                ds_id = source["data_source_id"]
+                if "id" not in source:
+                    source["id"] = ds_id
+                if "source_id" not in source:
+                    source["source_id"] = ds_id
+            
+            # 2. Log the Source Structure (For Debugging)
+            #  - visualizing how we map the IDs
+            logger.info(f"   🔹 Source [{i}]: keys={list(source.keys())} | type={source.get('type')}")
+
+    # ------------------------------------------------------------------
+
     try:
         # --- Step 1: Router Agent ---
         router_output = router_agent(payload)
 
-        # 1. Accumulate Router Usage
+        # Accumulate Router Usage
         if "usage" in router_output:
             total_input_tokens += router_output["usage"].get("input_tokens", 0)
             total_output_tokens += router_output["usage"].get("output_tokens", 0)
@@ -73,8 +94,7 @@ def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
             # A. Generate Plan
             plan = agent_func(payload, feedback=current_feedback)
             
-            # 2. Accumulate Agent Usage (for this specific attempt)
-            # Note: Agents return usage in 'ai_metadata', not 'usage'
+            # Accumulate Agent Usage
             if "ai_metadata" in plan:
                 total_input_tokens += plan["ai_metadata"].get("input_tokens", 0)
                 total_output_tokens += plan["ai_metadata"].get("output_tokens", 0)
@@ -88,7 +108,7 @@ def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
             # B. Validate Plan (Judge)
             review = llm_judge(payload, plan)
 
-            # 3. Accumulate Judge Usage
+            # Accumulate Judge Usage
             if "usage" in review:
                 total_input_tokens += review["usage"].get("input_tokens", 0)
                 total_output_tokens += review["usage"].get("output_tokens", 0)
@@ -97,7 +117,7 @@ def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
                 duration = time.time() - start_time
                 logger.info(f"✅ [Judge] Plan Approved for {request_id} in {duration:.2f}s")
                 
-                # C. Inject Execution Metadata & Finalize Usage
+                # C. Inject Execution Metadata
                 plan["meta"] = {
                     "attempts_used": attempt,
                     "processing_time_ms": int(duration * 1000),
@@ -105,11 +125,10 @@ def run_rivergen_flow(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "judge_score": review.get("score", 1.0)
                 }
                 
-                # Ensure ai_metadata block exists
+                # Finalize Usage Totals
                 if "ai_metadata" not in plan:
                     plan["ai_metadata"] = {}
                 
-                # 📝 Overwrite with Grand Totals
                 plan["ai_metadata"]["input_tokens"] = total_input_tokens
                 plan["ai_metadata"]["output_tokens"] = total_output_tokens
                 plan["ai_metadata"]["total_tokens"] = total_input_tokens + total_output_tokens

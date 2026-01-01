@@ -1367,6 +1367,7 @@ def nosql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]
     9. TRANSPARENCY:
     - If you cannot compute an aggregate (e.g., Lifetime Value) due to missing data, do NOT attempt to compute it; instead add a clear explanation and a suggested data requirement.
 
+    10. Do not use any placeholders like date use actual date functions or fixed dates.
     OUTPUT FORMAT:
     Return ONLY a valid JSON object matching this LEAN structure:
     {json.dumps(lean_template, indent=2)}

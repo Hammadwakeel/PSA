@@ -19,7 +19,7 @@ class DataSourceType(str, Enum):
     KAFKA = "kafka"
     PINECONE = "pinecone"
     WEAVIATE = "weaviate"
-
+    
 class TableType(str, Enum):
     TABLE = "table"
     VIEW = "view"
@@ -27,6 +27,7 @@ class TableType(str, Enum):
     VECTOR_INDEX = "vector_index"
     PARQUET = "parquet"
     CSV = "csv"
+    COLLECTION = "collection"
 
 # ==============================================================================
 # 2. SCHEMA DEFINITIONS
