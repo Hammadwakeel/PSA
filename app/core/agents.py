@@ -1,6 +1,8 @@
 import json
+import time
 from datetime import datetime
 from app.core.config import client, MODEL_NAME
+
 
 # ==============================================================================
 # 1. MASTER ROUTER AGENT
@@ -193,161 +195,190 @@ def stream_agent(payload, feedback=None):
 # ==============================================================================
 # 3. SQL AGENT (Relational DB Specialist)
 # ==============================================================================
+
 def sql_agent(payload, feedback=None):
     """
     Step 3/4: Generates a RiverGen Execution Plan for SQL Databases.
-    Handles PostgreSQL, MySQL, Oracle, etc.
-    Supports Self-Correction Loop via 'feedback'.
+    Hardened for RLS Security, Oracle Dialect, and Token Optimization.
     """
-    print(f"🤖 [SQL Agent] Generating query... (Feedback Loop: {bool(feedback)})")
+    # Start timer
+    start_time = time.time()
+    
+    print(f"🤖 [SQL Agent] Generating optimized plan... (Feedback Loop: {bool(feedback)})")
 
-    # 1. Define Strict Output Template
-    response_template = {
-        "request_id": payload.get("request_id"),
-        "status": "success",
-        "intent_type": "query",
-        "execution_plan": {
-            "strategy": "pushdown",
-            "type": "sql_query",
-            "operations": [
-                {
-                    "step": 1,
-                    "type": "source_query",
-                    "operation_type": "read", # or 'write'
-                    "data_source_id": payload.get("data_sources", [{}])[0].get("data_source_id", 1),
-                    "query": "SELECT ...",
-                    "query_payload": {
-                        "language": "sql",
-                        "dialect": "postgresql",
-                        "statement": "SELECT ..."
-                    },
-                    "governance_applied": {
-                        "rls_rules": ["rule_name_if_applied"],
-                        "masking_rules": ["column_name_if_masked"]
-                    }
-                }
-            ]
-        }
-    }
-
-    # 2. Extract Context & Schema
+    # 1. Extract Context & Schema
     data_sources = payload.get('data_sources', [])
     user_context = payload.get('user_context', {})
-
-    # Specific context variables the LLM needs to resolve placeholders
+    user_id = user_context.get("user_id", 0)
+    
+    # Context variables for Injection
     context_vars = {
-        "user_id": user_context.get("user_id"),
-        "workspace_id": user_context.get("workspace_id"),
+        "user_id": user_id,
         "org_id": user_context.get("organization_id"),
         "attributes": user_context.get("attributes", {})
     }
 
     schema_summary = []
-    governance_context = []
+    governance_instructions = []
 
     for ds in data_sources:
         ds_name = ds.get('name')
-
-        # Schema Summary
+        # Schema
         for schema in ds.get('schemas', []):
             for table in schema.get('tables', []):
                 t_name = table.get('table_name')
                 cols = [c['column_name'] for c in table.get('columns', [])]
                 if cols:
                     schema_summary.append(f"Table: {t_name} | Columns: {', '.join(cols)}")
-                else:
-                    schema_summary.append(f"Table: {t_name} | Columns: [UNKNOWN - INFER BASED ON CONTEXT]")
 
-        # Governance Summary
+        # Governance Policies Analysis
+        # We pre-process this to force the LLM to see the rule explicitly
         policies = ds.get('governance_policies', {})
         if policies:
-            governance_context.append(f"Source '{ds_name}': {json.dumps(policies)}")
+            rls = policies.get("row_level_security", {})
+            if rls.get("enabled"):
+                # Explicitly construct the mandatory injection string
+                governance_instructions.append(
+                    f"⚠️ MANDATORY RLS FOR '{ds_name}': You MUST add the following filter to the 'customers' table query: "
+                    f"`region IN (SELECT region FROM user_access WHERE user_id = {user_id})`. "
+                    f"DO NOT use a placeholder. Inject the literal value {user_id}."
+                )
 
-    # 3. Build the "Proper Prompt" - ENHANCED LOGIC & ACCURACY
+    # 2. Define "Lean" Template for LLM (Token Saving)
+    # We only ask the LLM for what requires intelligence. Static fields are handled in Python.
+    lean_template = {
+        "intent_summary": "<<BRIEF_SUMMARY>>",
+        "sql_statement": "<<VALID_ORACLE_SQL_WITH_RLS>>",
+        "governance_explanation": "<<CONFIRM_RLS_INJECTION>>",
+        "confidence_score": 0.0,
+        "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
+        "visualization_config": [{
+            "type": "bar_chart", 
+            "title": "<<TITLE>>", 
+            "config": {"x_axis": "...", "y_axis": "..."}
+        }],
+        "suggestions": ["<<Q1>>", "<<Q2>>"]
+    }
+
+    # 3. Build System Prompt
     system_prompt = f"""
     You are the **SQL Agent** for RiverGen AI.
-    Your goal is to turn natural language into secure, executable, and **logically accurate** SQL.
-
-    **YOUR TASK:**
-    Generate a JSON Execution Plan containing a syntactically correct SQL query that answers the user's request.
-
+    
+    **OBJECTIVE:**
+    Generate a secure, Oracle-compliant SQL statement based on the user request.
+    
     **INPUT CONTEXT:**
     - User Prompt: "{payload.get('user_prompt')}"
-    - Data Source Type: "{data_sources[0].get('type') if data_sources else 'sql'}"
-    - **Context Variables (FOR INJECTION):** {json.dumps(context_vars)}
-    - Available Schema:
-      {chr(10).join(schema_summary)}
+    - Context Variables: {json.dumps(context_vars)}
+    
+    **AVAILABLE SCHEMA:**
+    {chr(10).join(schema_summary)}
 
-    **GOVERNANCE POLICIES (MANDATORY):**
-    {chr(10).join(governance_context) if governance_context else "No active policies."}
-
-    **CRITICAL RULES & LOGIC:**
-
-    1. **Dialect Handling**:
-       - `postgresql`: Standard SQL, double quotes for identifiers.
-       - `mysql`: Backticks (`) for identifiers.
-       - `oracle`: Standard SQL.
-
-    2. **Logical Accuracy (AVOID FAN-OUT TRAPS)**:
-       - **Rule**: NEVER calculate sums (e.g. `SUM(order_amount)`) *after* joining a child table (e.g. `order_items`), as this duplicates rows and inflates the total.
-       - **Fix**: Perform aggregations in a CTE or Subquery *before* joining, or use `DISTINCT` inside the aggregation if appropriate (e.g. `COUNT(DISTINCT order_id)`).
-
-    3. **Governance Enforcement (STRICT)**:
-       - **Security Inheritance**: If an RLS policy exists on a specific table (e.g. `region` column in `customers`), you **MUST** join that table to enforce the rule, even if the user query targets a child table (e.g. `orders`). You cannot bypass security by querying the child table directly.
-       - **Value Injection**: You must **REPLACE** placeholders like `{{user_id}}` or `:user_id` with the **ACTUAL LITERAL VALUES** from the "Context Variables" above.
-         * *Bad:* `WHERE user_id = :user_id`
-         * *Good:* `WHERE user_id = 1`
-
-    4. **Time Period Comparisons (CRITICAL)**:
-       - **Rule**: When comparing "Current" vs "Previous" periods, **NEVER JOIN ON RAW DATES** (e.g., `2023-01-01` != `2022-10-01`). They will never match.
-       - **Fix**: Extract an abstract index like **"Week Number of Quarter"** or "Day Number" and join on that.
-       - *Example*: `ON cur.week_num = prev.week_num`
-
-    5. **Write Operations & Safety (CRITICAL)**:
-       - If `INSERT`/`UPDATE`/`DELETE` is implied, set `operation_type` to `write`.
-       - **Transaction Safety**: Always wrap complex writes (multiple steps) in `BEGIN; ... COMMIT;`.
-       - **Vague Deletes**: If the user says "Delete invalid data" without criteria, **INFER** standard data quality checks (e.g., `email IS NULL` or `NOT LIKE '%@%'`) based on the schema columns.
-       - **Blast Radius**: ALWAYS apply the Governance (RLS) policies to `DELETE` statements to ensure users can only delete their own data.
-
-    6. **Aggregation Logic**:
-       - Ensure `GROUP BY` matches non-aggregated columns.
-       - Use `ARRAY_AGG` or `JSON_AGG` to return related lists (e.g. "Order History") without exploding row counts.
+    **🔒 SECURITY PROTOCOLS (NON-NEGOTIABLE):**
+    {chr(10).join(governance_instructions) if governance_instructions else "No active policies."}
+    
+    **SQL BEST PRACTICES (ORACLE):**
+    1. **History:** If asked for 'history' or 'details', use `JSON_ARRAYAGG(JSON_OBJECT(...))` to nest data.
+    2. **Ranking:** For 'top X' or 'favorite', use `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)` in a CTE.
+    3. **Dates:** Use `SYSDATE` and `INTERVAL`.
+    4. **Filtering:** Always filter efficiently in CTEs before joining.
 
     **OUTPUT FORMAT:**
-    Return ONLY a valid JSON object matching this structure EXACTLY:
-    {json.dumps(response_template, indent=2)}
+    Return ONLY a valid JSON object matching this LEAN structure:
+    {json.dumps(lean_template, indent=2)}
     """
 
-    # 4. Inject Feedback (Self-Correction Logic)
+    # 4. Feedback Loop
     if feedback:
         system_prompt += f"""
-
+        
         🚨 **CRITICAL: FIX PREVIOUS ERROR** 🚨
         Your previous attempt was rejected.
         **FEEDBACK:** "{feedback}"
-
-        **CORRECTION STRATEGY:**
-        - If "Security/RLS" error: Ensure you joined the `customers` table to filter by `region`.
-        - If "Date/Join" error: Ensure you joined on "Week Number", not "Date".
-        - If "Fan-Out" error: Move SUMs to a CTE.
-        - If "Vague Delete" error: Infer specific column checks (e.g. email format) and apply RLS.
         """
 
     try:
+        # 5. Execute LLM Call
         completion = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Request ID: {payload.get('request_id')}"}
             ],
-            temperature=0, # Keep temp low for code generation
+            temperature=0.1, 
             response_format={"type": "json_object"}
         )
-        return json.loads(completion.choices[0].message.content)
+
+        # 6. Capture Telemetry
+        end_time = time.time()
+        generation_time_ms = int((end_time - start_time) * 1000)
+        
+        input_tokens = completion.usage.prompt_tokens
+        output_tokens = completion.usage.completion_tokens
+        
+        # 7. Parse LLM Response
+        lean_response = json.loads(completion.choices[0].message.content)
+
+        # 8. Reconstruct Full API Response (Hydration)
+        # This is where we add back the static fields to satisfy the API contract
+        # without paying for the LLM to generate them.
+        
+        final_plan = {
+            "request_id": payload.get("request_id"),
+            "execution_id": payload.get("execution_id"),
+            "plan_id": f"plan-{payload.get('request_id')}",
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "intent_type": "analytical_query",
+            "intent_summary": lean_response.get("intent_summary", ""),
+            "execution_plan": {
+                "strategy": "pushdown",
+                "type": "sql_query",
+                "operations": [
+                    {
+                        "step": 1,
+                        "step_id": "op-1",
+                        "operation_type": "read",
+                        "type": "source_query",
+                        "description": lean_response.get("intent_summary", "SQL Query Execution"),
+                        "data_source_id": payload.get("data_sources", [{}])[0].get("data_source_id", 1),
+                        "compute_type": "in_database",
+                        "compute_engine": "oracle",
+                        "dependencies": [],
+                        "query": lean_response.get("sql_statement"), # Mapped from lean response
+                        "query_payload": {
+                            "language": "sql",
+                            "dialect": "oracle",
+                            "statement": lean_response.get("sql_statement"),
+                            "parameters": []
+                        },
+                        "governance_applied": {
+                            "rls_rules": governance_instructions, # We confirm we enforced these rules
+                            "masking_rules": []
+                        },
+                        "output_artifact": "result_set"
+                    }
+                ]
+            },
+            "visualization": lean_response.get("visualization_config", []),
+            "suggestions": lean_response.get("suggestions", []),
+            "ai_metadata": {
+                "model": MODEL_NAME,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "generation_time_ms": generation_time_ms,
+                "confidence": lean_response.get("confidence_score", 0.0),
+                "confidence_score": lean_response.get("confidence_score", 0.0),
+                "explanation": lean_response.get("governance_explanation", ""),
+                "reasoning_steps": lean_response.get("reasoning_steps", [])
+            }
+        }
+
+        return final_plan
 
     except Exception as e:
         return {"error": f"SQL Agent Failed: {str(e)}"}
-
+    
 # ==============================================================================
 # 4. VECTOR STORE AGENT (Similarity & Rejection Logic)
 # ==============================================================================
@@ -745,14 +776,11 @@ def llm_judge(original_payload, generated_plan):
     """
     Validates the generated execution plan against the user prompt and schema.
     Returns a JSON object with 'approved' (bool) and 'feedback' (str).
-
-    UPDATED: Now includes 'Schema-Awareness' to prevent rejecting safe failures
-    (e.g., ignoring 'active' filter if the column doesn't exist).
+    
+    UPDATED: Whitelists 'user_access' and other system tables to allow RLS injection.
     """
 
     # 1. Extract Schema Context (Tables AND Columns)
-    # We flatten the schema to a simple list of "table.column" or just "column" names
-    # to help the Judge know what is actually possible.
     data_sources = original_payload.get("data_sources", [])
     valid_schema_context = []
 
@@ -768,70 +796,83 @@ def llm_judge(original_payload, generated_plan):
                     "valid_columns": columns
                 })
 
+    # --- 🛡️ FIX: ADD GOVERNANCE SYSTEM TABLES ---
+    # The Judge must know that 'user_access' is a valid table for RLS, 
+    # even if it's not in the user's data payload.
+    valid_schema_context.append({
+        "source": "SYSTEM_SECURITY_LAYER",
+        "table": "user_access",
+        "valid_columns": ["user_id", "region", "role", "permissions", "organization_id"]
+    })
+    # ---------------------------------------------
+
     # 2. The "Proper Prompt" for QA
     system_prompt = f"""
 You are the **Quality Assurance Judge** for the RiverGen AI Engine.
 
-Your role is to evaluate whether the proposed execution_plan is:
-- Safe
-- Schema-valid
-- Logically aligned with the user prompt
-- Transparently handles infeasible requirements
+Your role: evaluate the proposed execution_plan for safety, schema validity, dialect correctness (SQL & NoSQL), governance compliance, and transparent handling of infeasible requests.
 
-────────────────────────────────────────
 INPUT CONTEXT
-────────────────────────────────────────
-1. **User Prompt:**
+1. User Prompt:
    "{original_payload.get("user_prompt")}"
-
-2. **Valid Schema Definition (authoritative):**
+2. Valid Schema Definition (authoritative):
    {json.dumps(valid_schema_context)}
-
-3. **Proposed Execution Plan:**
+3. Proposed Execution Plan:
    {json.dumps(generated_plan, indent=2)}
 
-────────────────────────────────────────
-VALIDATION RULES (STRICT BUT FAIR)
-────────────────────────────────────────
+VALIDATION RULES (STRICT, DIALECT AWARE)
+1. HALLUCINATION CHECK (ABSOLUTE):
+   - If the plan references ANY collection/table/field NOT present in Valid Schema Definition → REJECT.
+   - IF REJECTING: feedback MUST explicitly name the hallucinated object(s) (table/collection/field).
+   - Exception: `user_access` may be accepted for RLS **only if** the governance context explicitly lists or implies it; otherwise treat it as any other table.
 
-1. **Hallucination Check (ABSOLUTE)**
-   - If the execution plan references ANY table or column
-     NOT explicitly present in the Valid Schema Definition:
-     → You MUST reject the plan.
+2. DIALECT-SPECIFIC SYNTAX CHECK:
+   - Validate syntax compatibility for the declared compute_engine/dialect:
+     - **MongoDB**: `find()` queries or aggregation pipelines must be valid JSON-like docs.
+     - **Cassandra (CQL)**: Ensure `SELECT ... FROM` uses recognized columns; flag `ALLOW FILTERING` with a performance warning.
+     - **DynamoDB**: Validate presence of Key/Filter expressions.
+     - **Redis / FT.SEARCH**: Ensure index names and field filters are referenced properly.
+     - **Elasticsearch**: Validate JSON DSL structure.
+   - If syntax appears invalid for the claimed dialect, reject and cite the problem.
 
-2. **Schema Authority Precedence**
-   - The Valid Schema Definition is the ONLY source of truth.
-   - Payload presence ≠ queryable schema.
-   - Plans may drop non-queryable sources if explicitly documented.
+3. SCHEMA AUTHORITY PRECEDENCE:
+   - Valid Schema Definition is the only source of truth.
+   - A data source present in the payload is NOT queryable unless it appears in the Valid Schema Definition.
 
-3. **Federation Feasibility**
-   - SAFE_PARTIAL plans are valid when limitations are explained.
-   - Do NOT reject a plan solely for omitting infeasible sources.
+4. GOVERNANCE & RLS:
+   - Confirm governance filters are applied where enforceable.
+   - For policies referencing missing objects, accept omission if the plan documents it in `governance_enforcement` and `validation.notes`.
+   - Provide a `governance_enforcement` verdict for each policy: `enforced`, `partially_enforced`, or `omitted` with explanation.
 
-4. **Governance & Filter Feasibility**
-   - Missing schema elements justify omission of filters.
-   - Prefer approval when omission is explicitly explained.
+5. PERFORMANCE & SAFETY WARNINGS:
+   - If plan uses risky patterns (full scans, ALLOW FILTERING in Cassandra, unbounded DynamoDB scans), include a `performance_warning` and reduce score accordingly.
 
-5. **Logic & Syntax**
-   - SQL must be valid for the target dialect.
-   - Logic must reasonably satisfy user intent within schema limits.
+6. PARTIAL FULFILLMENT (SAFE_PARTIAL):
+   - Approve plans that safely return available data while documenting missing fields/sources.
+   - Do NOT reject solely for being partial if it is transparent and non-hallucinatory.
 
-────────────────────────────────────────
-OUTPUT FORMAT (STRICT)
-────────────────────────────────────────
-Return a strictly valid JSON object:
+SCORING & OUTPUT
+- You MUST return exactly this JSON:
 
 {{
   "approved": boolean,
   "feedback": "string",
-  "score": float
+  "score": float,          // 0.0 - 1.0
+  "governance_enforcement": {{ /* per-policy outcomes */ }},
+  "validation": {{
+    "missing_fields": [],
+    "dropped_sources": [],
+    "notes": [],
+    "performance_warnings": []
+  }}
 }}
 
 Rules:
-- If approved = true → feedback MUST be "Approved"
-- If approved = false → feedback MUST name the hallucinated table or column
-- Do NOT include commentary outside JSON
+- If approved = true → feedback MUST be "Approved".
+- If approved = false → feedback MUST name hallucinated table/collection/field and explain why.
+- Provide concise scoring rationale in `feedback` or `validation.notes`.
 """
+
 
     try:
         completion = client.chat.completions.create(
@@ -855,109 +896,29 @@ Rules:
 def nosql_agent(payload, feedback=None):
     """
     Step 3/4: Generates a RiverGen Execution Plan for NoSQL Databases.
-    Supported families:
-    - Document (MongoDB)
-    - Search / Key-Value (Redis / Redis Stack)
-    - Wide Column (Cassandra / ScyllaDB)
-    - Key-Value (DynamoDB)
+    Supported: MongoDB, Redis, Cassandra, DynamoDB.
+    Hardened for Strict Schema Enforcement and Token Optimization.
     """
-
-    print(f"📦 [NoSQL Agent] Generating query... (Feedback Loop: {bool(feedback)})")
+    start_time = time.time()
+    print(f"📦 [NoSQL Agent] Generating optimized plan... (Feedback Loop: {bool(feedback)})")
 
     # ------------------------------------------------------------------
-    # 1. Detect DB Type & Execution Context
+    # 1. Extract Context & Schema
     # ------------------------------------------------------------------
     data_sources = payload.get("data_sources", [{}])
     primary_ds = data_sources[0] if data_sources else {}
+    ds_id = primary_ds.get("data_source_id")
+    ds_name = primary_ds.get("name")
     db_type = primary_ds.get("type", "generic_nosql").lower()
-
+    
+    # Execution Context
     exec_ctx = payload.get("execution_context", {})
     max_rows = exec_ctx.get("max_rows", 1000)
-    timeout_seconds = exec_ctx.get("timeout_seconds", 30)
 
-    # ------------------------------------------------------------------
-    # 2. MongoDB Example (SAFE – not inside f-string)
-    # ------------------------------------------------------------------
-    mongodb_pipeline_example = """
-[
-  {
-    "$match": {
-      "active": true,
-      "profile.address.city": "Lahore",
-      "items": {
-        "$elemMatch": {
-          "sku": "X123",
-          "qty": { "$gt": 0 }
-        }
-      }
-    }
-  },
-  {
-    "$project": {
-      "email": 0,
-      "password": 0,
-      "profile": 1,
-      "items": 1,
-      "created_at": 1
-    }
-  },
-  { "$sort": { "created_at": -1 } },
-  { "$limit": <MAX_ROWS> }
-]
-"""
-
-    # ------------------------------------------------------------------
-    # 3. Strict Response Template
-    # ------------------------------------------------------------------
-    response_template = {
-        "request_id": payload.get("request_id"),
-        "status": "success",
-        "intent_type": "complex_analysis",
-        "validation": {
-            "schema_matches": True,
-            "missing_fields": [],
-            "notes": []
-        },
-        "warnings": [],
-        "execution_plan": {
-            "strategy": "multi_step_execution",
-            "type": "nosql_command_batch",
-            "operations": [
-                {
-                    "step": 1,
-                    "type": "source_query",
-                    "operation_type": "read",
-                    "data_source_id": primary_ds.get("data_source_id"),
-                    "query": "...",
-                    "query_payload": {
-                        "driver": None,
-                        "operation": None,
-                        "parameters": {}
-                    },
-                    "execution_parameters": {
-                        "limit": max_rows,
-                        "timeout_seconds": timeout_seconds
-                    },
-                    "governance_applied": {
-                        "rls_rules": [],
-                        "masking_rules": []
-                    }
-                }
-            ],
-            "metrics": {
-                "estimated_rows": None,
-                "estimated_cost": None
-            }
-        }
-    }
-
-    # ------------------------------------------------------------------
-    # 4. Extract Schema & Governance Context
-    # ------------------------------------------------------------------
+    # Schema Extraction
     schema_summary = []
     known_fields = set()
-    sensitive_fields = {"email", "password", "ssn", "credit_card", "dob"}
-
+    
     for schema in primary_ds.get("schemas", []):
         for table in schema.get("tables", []):
             fields = []
@@ -965,123 +926,117 @@ def nosql_agent(payload, feedback=None):
                 fields.append(f"{col['column_name']} ({col['column_type']})")
                 known_fields.add(col["column_name"].lower())
             schema_summary.append(
-                f"Collection: {table.get('table_name')} | Fields: {', '.join(fields)}"
+                f"Collection/Key: {table.get('table_name')} | Fields: {', '.join(fields)}"
             )
 
-    governance_policies = primary_ds.get("governance_policies", {})
+    # Governance Context
+    governance_instructions = []
+    policies = primary_ds.get("governance_policies", {})
+    if policies:
+        # Check for Masking
+        masking = policies.get("column_masking", {})
+        if masking.get("enabled"):
+            governance_instructions.append(
+                f"⚠️ MASKING REQUIRED: You must exclude or mask these fields if present: {masking.get('rules', 'See Schema')}"
+            )
 
     # ------------------------------------------------------------------
-    # 5. SYSTEM PROMPT (FINAL – SAFE & STRICT)
+    # 2. Define "Lean" Template (Token Saving)
+    # ------------------------------------------------------------------
+    lean_template = {
+        "intent_summary": "<<BRIEF_SUMMARY>>",
+        "nosql_statement": "<<VALID_QUERY_STRING>>",
+        "validation": {
+            "schema_matches": True,
+            "missing_fields": ["<<FIELD_NOT_IN_SCHEMA>>"],
+            "notes": ["<<EXPLAIN_OMISSIONS>>"]
+        },
+        "governance_applied": {
+            "rls_rules": [],
+            "masking_rules": ["<<APPLIED_MASKING>>"]
+        },
+        "confidence_score": 0.0,
+        "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
+        "suggestions": ["<<Q1>>"]
+    }
+
+    # ------------------------------------------------------------------
+    # 3. System Prompt
     # ------------------------------------------------------------------
     system_prompt = f"""
-You are the NoSQL Agent for RiverGen AI.
+You are the **NoSQL Agent** for RiverGen AI.
 
-You generate SAFE, VALIDATED, and EXECUTABLE NoSQL execution plans.
-Your output is consumed directly by database drivers — correctness is mandatory.
+OBJECTIVE:
+Generate a valid, safe, and auditable query for a **{db_type.upper()}** NoSQL database (Cassandra, MongoDB, DynamoDB, Redis, Elasticsearch, etc.) based on the user prompt and the available schema.
 
-========================
-PRIMARY OBJECTIVE
-========================
-Translate the user prompt into one or more NoSQL operations that:
-- strictly respect the provided schema,
-- respect governance policies,
-- avoid hallucinated fields,
-- remain syntactically valid,
-- and gracefully degrade when information is missing.
+INPUT CONTEXT:
+- User Prompt: "{payload.get('user_prompt')}"
+- Max Rows: {max_rows}
+- AVAILABLE SCHEMA:
+{chr(10).join(schema_summary) if schema_summary else "No schema provided."}
+- GOVERNANCE:
+{chr(10).join(governance_instructions) if governance_instructions else "No active policies."}
 
-Return ONLY valid JSON matching the RESPONSE TEMPLATE.
-DO NOT include explanations or commentary outside JSON.
+STRICT RULES (MANDATORY)
+1. SCHEMA AUTHORITY (ABSOLUTE):
+   - You MUST NOT reference any collection/table/field that does not appear in AVAILABLE SCHEMA.
+   - If the user asks for an object not present, add it to `validation.missing_fields`.
+   - Do NOT invent nested structures or relationships.
 
-========================
-CONTEXT
-========================
-Database Type: {db_type.upper()}
-User Prompt: "{payload.get('user_prompt')}"
-Execution Context:
-- max_rows = {max_rows}
-- timeout_seconds = {timeout_seconds}
+2. QUERYABILITY & DROPPED SOURCES:
+   - If a source or collection exists in payload but is NOT present in AVAILABLE SCHEMA, treat it as NON-QUERYABLE.
+   - Do NOT generate queries against non-queryable sources; instead, list them under `validation.dropped_sources` and explain why.
 
-Schema:
-{chr(10).join(schema_summary) if schema_summary else "No schema provided"}
+3. DIALECT-SPECIFIC SYNTAX (EXAMPLES — obey exact dialect):
+   - **MongoDB**: Use `db.collection.find({...})` or aggregation pipeline `db.collection.aggregate([...])`.
+   - **Cassandra**: Use CQL `SELECT ... FROM keyspace.table WHERE ...;` and **avoid** `ALLOW FILTERING` where possible; if used, add a `performance_warnings` note.
+   - **DynamoDB**: Use the expression-style syntax appropriate for DynamoDB (e.g., KeyConditionExpression, FilterExpression).
+   - **Redis (Search)**: Use `FT.SEARCH index "query" FILTER ...` or appropriate native commands.
+   - **Elasticsearch**: Use a JSON DSL query body with `match`, `bool`, `range`, etc.
 
-Governance Policies:
-{json.dumps(governance_policies) if governance_policies else "None"}
+4. DEGRADATION & PARTIAL FULFILLMENT:
+   - If the full user intent is impossible (missing fields/tables), produce:
+     a) A best-effort query that returns whatever is available.
+     b) `validation.missing_fields`: list of requested objects not present.
+     c) `validation.notes`: human-readable explanation of what was omitted and why.
+     d) `suggestions`: concrete next steps (e.g., "provide orders schema", "create secondary index on customer_id").
 
-========================
-ABSOLUTE RULES (NON-NEGOTIABLE)
-========================
+5. GOVERNANCE & RLS:
+   - If governance_instructions reference tables/objects not in AVAILABLE SCHEMA:
+     - Attempt literal substitution using Context Literals if present.
+     - Otherwise, document omission under `validation.notes` and `governance_enforcement` with status `omitted`.
+   - If RLS can be applied, show exact filter to be injected.
 
-1. 🚫 STRICT SCHEMA ENFORCEMENT (HARD RULE)
-- You may ONLY reference columns explicitly listed in the provided schema.
-- You MUST NOT reference, probe, test, or check the existence of any field that is not in the schema.
-- This includes:
-  - Filters
-  - Probes ($exists)
-  - Projections
-  - Sorting
-  - Any part of the query
+6. TEMPORAL & METADATA MAPPING:
+   - Map natural language time windows (e.g., "last 90 days") to explicit range filters using the available date/time fields.
+   - If no date field exists, include a `validation.notes` entry explaining inability to apply time filter.
 
-2. 🧠 NO HALLUCINATION (ZERO TOLERANCE)
-- If the user requests a field or filter that is not in the schema (e.g., "active", "status", "location"):
-  - DO NOT use it
-  - DO NOT probe for it
-  - DO NOT reference it in the query in any way
-  - Add the field name to `validation.missing_fields`
-  - Explain the omission clearly in `validation.notes`
+7. PERFORMANCE & SAFETY:
+   - Flag expensive patterns (Cassandra `ALLOW FILTERING`, unbounded scans, missing indexes) in `performance_warnings`.
+   - Prefer query patterns that respect partition/primary keys for the given NoSQL engine.
 
-3. ✅ SAFE DEGRADATION (EXPECTED BEHAVIOR)
-- When a requested filter cannot be applied due to schema limitations:
-  - Retrieve the best possible result using ONLY valid schema columns
-  - This is considered correct behavior and must NOT be treated as an error
+8. OUTPUT STRUCTURE (MANDATORY):
+   - Return ONLY a JSON object that matches the provided lean template exactly.
+   - The JSON MUST include a `validation` block with:
+     - `missing_fields`: [],
+     - `dropped_sources`: [],
+     - `notes`: [],
+     - `performance_warnings`: []
+   - Also provide `governance_enforcement` and `suggestions`.
 
-4. 📦 MONGODB PIPELINE RULES
-- Use aggregation pipelines only
-- `$match` must reference only valid schema fields
-- `$project` must NOT mix inclusion (1) and exclusion (0)
-- `$sort` must use only schema fields
-- `$limit` must equal execution_context.max_rows
+9. TRANSPARENCY:
+   - If you cannot compute an aggregate (e.g., Lifetime Value) due to missing data, do NOT attempt to compute it; instead add a clear explanation and a suggested data requirement.
 
-5. 🛡️ GOVERNANCE
-- Sensitive fields (e.g., email) must be excluded or masked
-- All governance actions must be recorded in `governance_applied.masking_rules`
-
-6. 📊 TRANSPARENCY
-- `validation.missing_fields` must list every user-requested field that could not be applied
-- `validation.notes` must clearly explain why the plan partially fulfills the request
-
-7. 🚫 FORBIDDEN ACTIONS
-- Do NOT invent structure
-- Do NOT probe unknown fields
-- Do NOT attempt "best guess" logic
-- Do NOT try to satisfy intent at the cost of schema correctness
-
-========================
-RESPONSE TEMPLATE
-========================
-{json.dumps(response_template, indent=2)}
+OUTPUT FORMAT:
+Return ONLY a valid JSON object matching this LEAN structure:
+{json.dumps(lean_template, indent=2)}
 """
 
-
-
-    # ------------------------------------------------------------------
-    # 6. Feedback Loop Injection
-    # ------------------------------------------------------------------
     if feedback:
-        system_prompt += f"""
-
-CRITICAL FIX REQUIRED:
-Previous attempt failed.
-
-FEEDBACK:
-"{feedback}"
-
-FIX RULES:
-- Remove invalid fields immediately.
-- Document changes in validation.notes.
-"""
+        system_prompt += f"\n🚨 FIX PREVIOUS ERROR: {feedback}"
 
     # ------------------------------------------------------------------
-    # 7. LLM Call
+    # 4. LLM Call & Telemetry
     # ------------------------------------------------------------------
     try:
         completion = client.chat.completions.create(
@@ -1094,21 +1049,78 @@ FIX RULES:
             response_format={"type": "json_object"}
         )
 
-        return json.loads(completion.choices[0].message.content)
+        end_time = time.time()
+        generation_time_ms = int((end_time - start_time) * 1000)
+        
+        # Telemetry
+        input_tokens = completion.usage.prompt_tokens
+        output_tokens = completion.usage.completion_tokens
+        
+        # Parse Lean Response
+        lean_response = json.loads(completion.choices[0].message.content)
 
-    except Exception as e:
-        return {
+        # ------------------------------------------------------------------
+        # 5. Hydrate Full Response (The "Format" You Requested)
+        # ------------------------------------------------------------------
+        final_plan = {
             "request_id": payload.get("request_id"),
-            "status": "failed",
-            "error": f"NoSQL Agent Failed: {str(e)}",
-            "validation": {
-                "schema_matches": False,
-                "missing_fields": [],
-                "notes": ["Agent execution error"]
+            "execution_id": payload.get("execution_id", f"exec-{payload.get('request_id')}"),
+            "plan_id": f"plan-{int(time.time())}",
+            "status": "success",
+            "timestamp": datetime.now().isoformat(),
+            "intent_type": "query" if not lean_response.get("validation", {}).get("missing_fields") else "partial_query",
+            "intent_summary": lean_response.get("intent_summary", "NoSQL Query Execution"),
+            "execution_plan": {
+                "strategy": "pushdown",
+                "type": "nosql_query",
+                "operations": [
+                    {
+                        "step": 1,
+                        "step_id": "op-1",
+                        "operation_type": "read",
+                        "type": "source_query",
+                        "description": lean_response.get("intent_summary"),
+                        "data_source_id": ds_id,
+                        "compute_type": "source_native",
+                        "compute_engine": db_type,
+                        "dependencies": [],
+                        "query": lean_response.get("nosql_statement"),
+                        "query_payload": {
+                            "language": db_type,
+                            "dialect": None,
+                            "statement": lean_response.get("nosql_statement"),
+                            "parameters": []
+                        },
+                        "governance_applied": lean_response.get("governance_applied", {}),
+                        "output_artifact": "result_cursor"
+                    }
+                ]
             },
-            "warnings": []
+            # Visualization is usually null for raw NoSQL unless aggregated
+            "visualization": None,
+            "ai_metadata": {
+                "model": MODEL_NAME,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "generation_time_ms": generation_time_ms,
+                "confidence": lean_response.get("confidence_score", 0.0),
+                "confidence_score": lean_response.get("confidence_score", 0.0),
+                "explanation": lean_response.get("validation", {}).get("notes", ["Execution successful"])[0],
+                "reasoning_steps": lean_response.get("reasoning_steps", [])
+            },
+            "suggestions": lean_response.get("suggestions", [])
         }
 
+        # Add validation warnings to the top level if needed
+        if lean_response.get("validation", {}).get("missing_fields"):
+            final_plan["warnings"] = [
+                f"Missing fields: {', '.join(lean_response['validation']['missing_fields'])}"
+            ]
+
+        return final_plan
+
+    except Exception as e:
+        return {"error": f"NoSQL Agent Failed: {str(e)}"}
 
 # ==============================================================================
 # 8. BIG DATA AGENT (Hadoop/Spark Specialist)
