@@ -9,8 +9,11 @@ class ColumnSchema(BaseModel):
 
 class TableSchema(BaseModel):
     table_name: str
-    table_type: str  # e.g., 'table', 'view', 'stream', 'vector_index'
+    table_type: str  # e.g., 'table', 'view', 'stream', 'vector_index', 'parquet'
     columns: List[ColumnSchema]
+    # Add optional fields for Big Data / File sources
+    file_path: Optional[str] = None
+    file_format: Optional[str] = None
 
 class SchemaDetails(BaseModel):
     schema_name: str
@@ -18,9 +21,11 @@ class SchemaDetails(BaseModel):
 
 class GovernanceRLS(BaseModel):
     enabled: bool = False
+    rules: List[Dict[str, str]] = [] # Added to support rule definitions
 
 class GovernanceMasking(BaseModel):
     enabled: bool = False
+    rules: List[str] = []
 
 class GovernancePolicies(BaseModel):
     row_level_security: Optional[GovernanceRLS] = None
@@ -29,9 +34,14 @@ class GovernancePolicies(BaseModel):
 class DataSource(BaseModel):
     data_source_id: int
     name: str
-    type: str  # e.g., 'postgresql', 'kafka', 'kinesis', 'pinecone'
-    schemas: List[SchemaDetails]
+    type: str  # e.g., 'postgresql', 'kafka', 's3', 'pinecone'
+    # FIX 1: Make schemas optional with a default empty list
+    schemas: List[SchemaDetails] = [] 
+    # FIX 2: Add file_metadata field to support S3/Data Lake payloads
+    file_metadata: Optional[Dict[str, Any]] = None 
     governance_policies: Optional[GovernancePolicies] = None
+    # FIX 3: Add optional topics field for Kafka support
+    topics: Optional[List[Dict[str, Any]]] = None
 
 class ExecutionContext(BaseModel):
     max_rows: int = 1000

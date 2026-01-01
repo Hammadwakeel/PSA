@@ -198,20 +198,22 @@ def stream_agent(payload, feedback=None):
 
 def sql_agent(payload, feedback=None):
     """
-    Step 3/4: Generates a RiverGen Execution Plan for SQL Databases.
-    Hardened for RLS Security, Oracle Dialect, and Token Optimization.
+    Step 3/4: Generates a Dialect-Aware Execution Plan.
+    Enforces Transaction Safety and Literal RLS Injection.
     """
-    # Start timer
     start_time = time.time()
     
-    print(f"🤖 [SQL Agent] Generating optimized plan... (Feedback Loop: {bool(feedback)})")
-
-    # 1. Extract Context & Schema
+    # 1. Dynamic Dialect Detection
     data_sources = payload.get('data_sources', [])
+    primary_ds = data_sources[0] if data_sources else {}
+    # Use the 'type' from the data_source to drive the logic
+    db_type = primary_ds.get('type', 'postgresql').lower() 
+    ds_id = primary_ds.get('data_source_id', 1)
+    
+    # 2. Extract Context & Schema
     user_context = payload.get('user_context', {})
     user_id = user_context.get("user_id", 0)
     
-    # Context variables for Injection
     context_vars = {
         "user_id": user_id,
         "org_id": user_context.get("organization_id"),
@@ -223,7 +225,6 @@ def sql_agent(payload, feedback=None):
 
     for ds in data_sources:
         ds_name = ds.get('name')
-        # Schema
         for schema in ds.get('schemas', []):
             for table in schema.get('tables', []):
                 t_name = table.get('table_name')
@@ -231,97 +232,59 @@ def sql_agent(payload, feedback=None):
                 if cols:
                     schema_summary.append(f"Table: {t_name} | Columns: {', '.join(cols)}")
 
-        # Governance Policies Analysis
-        # We pre-process this to force the LLM to see the rule explicitly
+        # 🔒 Governance Injection
         policies = ds.get('governance_policies', {})
         if policies:
             rls = policies.get("row_level_security", {})
             if rls.get("enabled"):
-                # Explicitly construct the mandatory injection string
                 governance_instructions.append(
-                    f"⚠️ MANDATORY RLS FOR '{ds_name}': You MUST add the following filter to the 'customers' table query: "
+                    f"⚠️ MANDATORY RLS FOR '{ds_name}': You MUST add the following filter to the 'customers' table: "
                     f"`region IN (SELECT region FROM user_access WHERE user_id = {user_id})`. "
-                    f"DO NOT use a placeholder. Inject the literal value {user_id}."
+                    f"Inject the literal value {user_id}."
                 )
 
-    # 2. Define "Lean" Template for LLM (Token Saving)
-    # We only ask the LLM for what requires intelligence. Static fields are handled in Python.
+    # 3. Lean Template
     lean_template = {
         "intent_summary": "<<BRIEF_SUMMARY>>",
-        "sql_statement": "<<VALID_ORACLE_SQL_WITH_RLS>>",
-        "governance_explanation": "<<CONFIRM_RLS_INJECTION>>",
+        "sql_statement": f"<<VALID_{db_type.upper()}_SQL>>",
+        "governance_explanation": "<<CONFIRM_RLS>>",
         "confidence_score": 0.0,
         "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
-        "visualization_config": [{
-            "type": "bar_chart", 
-            "title": "<<TITLE>>", 
-            "config": {"x_axis": "...", "y_axis": "..."}
-        }],
-        "suggestions": ["<<Q1>>", "<<Q2>>"]
+        "visualization_config": [],
+        "suggestions": []
     }
 
-    # 3. Build System Prompt
+    # 4. System Prompt (Dialect-Aware)
     system_prompt = f"""
-    You are the **SQL Agent** for RiverGen AI.
-    
-    **OBJECTIVE:**
-    Generate a secure, Oracle-compliant SQL statement based on the user request.
-    
-    **INPUT CONTEXT:**
-    - User Prompt: "{payload.get('user_prompt')}"
-    - Context Variables: {json.dumps(context_vars)}
-    
-    **AVAILABLE SCHEMA:**
-    {chr(10).join(schema_summary)}
+You are the **SQL Agent**. Generate a secure JSON plan for **{db_type.upper()}**.
 
-    **🔒 SECURITY PROTOCOLS (NON-NEGOTIABLE):**
-    {chr(10).join(governance_instructions) if governance_instructions else "No active policies."}
-    
-    **SQL BEST PRACTICES (ORACLE):**
-    1. **History:** If asked for 'history' or 'details', use `JSON_ARRAYAGG(JSON_OBJECT(...))` to nest data.
-    2. **Ranking:** For 'top X' or 'favorite', use `ROW_NUMBER() OVER (PARTITION BY ... ORDER BY ...)` in a CTE.
-    3. **Dates:** Use `SYSDATE` and `INTERVAL`.
-    4. **Filtering:** Always filter efficiently in CTEs before joining.
+**SQL BEST PRACTICES ({db_type.upper()}):**
+- Use {db_type} specific syntax (e.g., {'SYSDATE' if db_type == 'oracle' else 'CURRENT_DATE'}).
+- For WRITE/DELETE, wrap in `BEGIN;` and `COMMIT;`.
+- RLS: {chr(10).join(governance_instructions) if governance_instructions else "None."}
 
-    **OUTPUT FORMAT:**
-    Return ONLY a valid JSON object matching this LEAN structure:
-    {json.dumps(lean_template, indent=2)}
-    """
+**SCHEMA:**
+{chr(10).join(schema_summary)}
 
-    # 4. Feedback Loop
+**OUTPUT FORMAT:**
+{json.dumps(lean_template, indent=2)}
+"""
+
     if feedback:
-        system_prompt += f"""
-        
-        🚨 **CRITICAL: FIX PREVIOUS ERROR** 🚨
-        Your previous attempt was rejected.
-        **FEEDBACK:** "{feedback}"
-        """
+        system_prompt += f"\n🚨 **FIX PREVIOUS ERROR**: {feedback}"
 
     try:
-        # 5. Execute LLM Call
         completion = client.chat.completions.create(
             model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Request ID: {payload.get('request_id')}"}
-            ],
-            temperature=0.1, 
+            messages=[{"role": "system", "content": system_prompt}, 
+                      {"role": "user", "content": f"Request ID: {payload.get('request_id')}"}],
+            temperature=0,
             response_format={"type": "json_object"}
         )
 
-        # 6. Capture Telemetry
+        # 5. Hydration Logic (CRITICAL FIX)
         end_time = time.time()
-        generation_time_ms = int((end_time - start_time) * 1000)
-        
-        input_tokens = completion.usage.prompt_tokens
-        output_tokens = completion.usage.completion_tokens
-        
-        # 7. Parse LLM Response
         lean_response = json.loads(completion.choices[0].message.content)
-
-        # 8. Reconstruct Full API Response (Hydration)
-        # This is where we add back the static fields to satisfy the API contract
-        # without paying for the LLM to generate them.
         
         final_plan = {
             "request_id": payload.get("request_id"),
@@ -334,50 +297,31 @@ def sql_agent(payload, feedback=None):
             "execution_plan": {
                 "strategy": "pushdown",
                 "type": "sql_query",
-                "operations": [
-                    {
-                        "step": 1,
-                        "step_id": "op-1",
-                        "operation_type": "read",
-                        "type": "source_query",
-                        "description": lean_response.get("intent_summary", "SQL Query Execution"),
-                        "data_source_id": payload.get("data_sources", [{}])[0].get("data_source_id", 1),
-                        "compute_type": "in_database",
-                        "compute_engine": "oracle",
-                        "dependencies": [],
-                        "query": lean_response.get("sql_statement"), # Mapped from lean response
-                        "query_payload": {
-                            "language": "sql",
-                            "dialect": "oracle",
-                            "statement": lean_response.get("sql_statement"),
-                            "parameters": []
-                        },
-                        "governance_applied": {
-                            "rls_rules": governance_instructions, # We confirm we enforced these rules
-                            "masking_rules": []
-                        },
-                        "output_artifact": "result_set"
-                    }
-                ]
+                "operations": [{
+                    "step": 1,
+                    "operation_type": "read" if "SELECT" in lean_response.get("sql_statement", "").upper() else "write",
+                    "compute_engine": db_type, # FIXED: Dynamic
+                    "query": lean_response.get("sql_statement"),
+                    "query_payload": {
+                        "language": "sql",
+                        "dialect": db_type, # FIXED: Dynamic
+                        "statement": lean_response.get("sql_statement")
+                    },
+                    "governance_applied": {"rls_rules": governance_instructions}
+                }]
             },
             "visualization": lean_response.get("visualization_config", []),
-            "suggestions": lean_response.get("suggestions", []),
             "ai_metadata": {
-                "model": MODEL_NAME,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "generation_time_ms": generation_time_ms,
-                "confidence": lean_response.get("confidence_score", 0.0),
+                "generation_time_ms": int((end_time - start_time) * 1000),
                 "confidence_score": lean_response.get("confidence_score", 0.0),
                 "explanation": lean_response.get("governance_explanation", ""),
                 "reasoning_steps": lean_response.get("reasoning_steps", [])
-            }
+            },
+            "suggestions": lean_response.get("suggestions", [])
         }
-
         return final_plan
-
     except Exception as e:
-        return {"error": f"SQL Agent Failed: {str(e)}"}
+        return {"error": f"Agent Failed: {str(e)}"}
     
 # ==============================================================================
 # 4. VECTOR STORE AGENT (Similarity & Rejection Logic)
@@ -939,15 +883,24 @@ INPUT:
    {json.dumps(valid_schema_context)}
 3. Proposed Execution Plan:
    {json.dumps(generated_plan, indent=2)}
+4. Target Data Source Engine:
+   "{generated_plan.get('compute_engine')}"  # e.g., postgres, mysql, oracle, sqlserver, cassandra
 
 RULES:
 1) HALLUCINATION CHECK:
    - Any table/column not in Valid Schema → REJECT.
    - Include step_id in feedback.
 
-2) SYNTAX & DIALECT:
-   - SQL must be valid for the declared engine (Postgres, MySQL, Cassandra CQL).
-   - ALLOW FILTERING in Cassandra is flagged as performance risk.
+2) SYNTAX & DIALECT CHECK:
+   - SQL must be valid for the declared engine/dialect.
+   - PostgreSQL: standard SQL, interval/date syntax.
+   - MySQL: use `LIMIT`, backticks if needed.
+   - Oracle: use `SYSDATE`, `INTERVAL`, JSON_ARRAYAGG/JSON_OBJECT for nested data.
+   - SQL Server: use `GETDATE()`, `DATEADD`, JSON functions for nesting.
+   - Cassandra CQL: `ALLOW FILTERING` flagged as performance risk.
+
+   - If the SQL uses syntax from a different engine than the data source → REJECT.
+   - Provide specific feedback on syntax errors or dialect mismatches.
 
 3) GOVERNANCE:
    - Confirm RLS or masking is applied if defined.
@@ -955,6 +908,7 @@ RULES:
 
 4) PARTIAL DATA:
    - Approve if safe and explain missing fields in `validation.missing_fields`.
+   - Include notes for performance issues or risky operations.
 
 OUTPUT:
 Return ONLY a JSON object:
@@ -972,6 +926,7 @@ Return ONLY a JSON object:
 }}
 Do NOT include any extra text.
 """
+
 
     general_qa_judge_prompt = f"""
 You are the **Quality Assurance Judge** for RiverGen AI. Evaluate any execution plan (SQL, NoSQL, vector) for:
