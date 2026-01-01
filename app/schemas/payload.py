@@ -19,7 +19,7 @@ class DataSourceType(str, Enum):
     KAFKA = "kafka"
     PINECONE = "pinecone"
     WEAVIATE = "weaviate"
-    
+
 class TableType(str, Enum):
     TABLE = "table"
     VIEW = "view"
@@ -132,8 +132,6 @@ class ExecutionRequest(BaseModel):
     
     execution_context: ExecutionContext = Field(default_factory=ExecutionContext)
     
-    ai_model: Optional[str] = Field("meta-llama/llama-3.3-70b-versatile", description="Target LLM model")
-    temperature: float = Field(0.1, ge=0.0, le=1.0, description="LLM Creativity")
     include_visualization: bool = Field(True, description="Request chart suggestions")
     
     @field_validator('data_sources')

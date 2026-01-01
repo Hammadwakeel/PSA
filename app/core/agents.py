@@ -83,6 +83,7 @@ def router_agent(full_payload: Dict[str, Any]) -> Dict[str, Any]:
        - Type 'mongodb', 'dynamodb', 'redis', 'cassandra' -> `nosql_agent`
        - Type 'snowflake', 'bigquery', 'redshift', 's3' -> `big_data_agent`
        - Type 'pinecone', 'weaviate', 'vector' -> `vector_store_agent`
+    4. **Machine Learning**: If prompt mentions 'train', 'model', 'predict' -> SELECT `ml_agent`.
     
     **OUTPUT FORMAT:**
     Return ONLY valid JSON:
@@ -301,11 +302,6 @@ def stream_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any
 # ==============================================================================
 # 3. SQL AGENT (Relational DB Specialist)
 # ==============================================================================
-
-# ==============================================================================
-# 3. SQL AGENT (Relational DB Specialist)
-# ==============================================================================
-
 def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
     """
     Step 3/4: Generates a Dialect-Aware Execution Plan.
@@ -383,8 +379,6 @@ def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
         # 4. System Prompt (Dialect-Aware)
         system_prompt = f"""
         You are the **SQL Agent**. 
-
-[Image of database schema diagram]
 
         Generate a secure JSON plan for **{db_type.upper()}**.
 
@@ -466,9 +460,6 @@ def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
         logger.error(f"SQL Agent Failed: {e}", exc_info=True)
         return {"error": f"SQL Agent Failed: {str(e)}"}
         
-# ==============================================================================
-# 4. VECTOR STORE AGENT (Similarity & Rejection Logic)
-# ==============================================================================
 # ==============================================================================
 # 4. VECTOR STORE AGENT (Similarity & Rejection Logic)
 # ==============================================================================
@@ -854,9 +845,6 @@ def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
 # ==============================================================================
 # 6. LLM JUDGE (The Quality Gate)
 # ==============================================================================
-# ==============================================================================
-# 6. LLM JUDGE (The Quality Gate)
-# ==============================================================================
 def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) -> Dict[str, Any]:
     """
     Step 5: Universal Quality Gate.
@@ -1134,6 +1122,39 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
     }}
     Do NOT include any extra text.
     """
+        
+        ML_JUDGE_PROMPT = f"""
+You are the **RiverGen ML Quality Auditor**. Your job is to validate a Machine Learning Execution Plan.
+You must return your evaluation in a strictly valid **json** format.
+
+**VALIDATION CRITERIA:**
+1. **Target Leakage**: Ensure the 'labels' are not accidentally included in the 'features' list in Step 1.
+2. **Step Dependency**: Verify that Step 2 (Pre-processing) lists Step 1 as a dependency, and Step 3 (Training) lists Step 2.
+3. **Metric Alignment**: If the task is Regression, metrics must be RMSE/R2. If Classification, metrics must be F1/AUC-ROC.
+4. **Data Handling**: Check if the plan includes the specific imputation (e.g., mean/median) and scaling (e.g., min-max) requested in the prompt.
+5. **SQL Accuracy**: Verify the SQL joins the correct tables and aggregates data logically for ML consumption.
+
+
+
+**INPUT TO EVALUATE:**
+- User Prompt: {original_payload.get("user_prompt")}
+- Generated Plan: {json.dumps(generated_plan, indent=2)}
+    OUTPUT:
+    Return ONLY a JSON object:
+    {{
+    "approved": boolean,
+    "feedback": "string",
+    "score": float,
+    "governance_enforcement": {{ }},
+    "validation": {{
+        "missing_fields": [],
+        "dropped_sources": [],
+        "notes": [],
+        "performance_warnings": []
+    }}
+    }}
+    Do NOT include any extra text.
+    """
 
 
         general_qa_judge_prompt = f"""
@@ -1190,6 +1211,9 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
         elif plan_type == "sql_query":
             logger.info("🧠 Using SQL Judge Prompt")
             system_prompt = sql_judge_prompt
+        elif plan_type == "ml_workflow":
+            logger.info("🧠 Using ML Judge Prompt")
+            system_prompt = ML_JUDGE_PROMPT
         else:
             logger.info("🧠 Using General QA Judge Prompt")
             system_prompt = general_qa_judge_prompt
@@ -1462,9 +1486,6 @@ def nosql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]
 # ==============================================================================
 # 8. BIG DATA AGENT (Hadoop/Spark Specialist)
 # ==============================================================================
-# ==============================================================================
-# 8. BIG DATA AGENT (Hadoop/Spark Specialist)
-# ==============================================================================
 def big_data_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
     """
     Step 3/4: Generates a RiverGen Execution Plan for Big Data workloads.
@@ -1614,162 +1635,129 @@ def big_data_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, A
 # ==============================================================================
 # 9. ML AGENT (Machine Learning Specialist)
 # ==============================================================================
-# ==============================================================================
-# 9. ML AGENT (Machine Learning Specialist)
-# ==============================================================================
 def ml_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
     """
-    Step 3/4: Generates a RiverGen Execution Plan for Machine Learning tasks.
-    Handles predictions (regression/classification), forecasting, and anomaly detection.
-    Supports Self-Correction Loop via 'feedback'.
+    Step 3/4: Generates a specialized ML Execution Plan.
+    Orchestrates Feature Engineering, Pre-processing, Model Training, and Evaluation.
     """
     # ✅ Initialize Client & Config at Runtime
     client = get_groq_client()
     config = get_config()
 
     start_time = time.time()
-    logger.info(f"🧠 [ML Agent] Generating plan... Feedback: {bool(feedback)}")
+    logger.info(f"🧠 [ML Agent] Building ML Pipeline... Feedback: {bool(feedback)}")
 
     try:
-        # 1. Extract Governance & Schema Context (Robust)
+        # 1. Context Extraction
+        user_prompt = payload.get('user_prompt')
         data_sources = payload.get('data_sources', [])
-        schema_summary = []
-        
-        # Default ID for template
-        primary_ds_id = data_sources[0].get("data_source_id") if data_sources else None
+        user_context = payload.get('user_context', {})
+        ml_params = payload.get('execution_context', {}).get('ml_params', {})
 
-        for ds in data_sources:
-            ds_name = ds.get('name', 'Unknown Source')
-            # We need to know if the source supports native ML (like BigQuery/Snowflake)
-            source_type = ds.get('type', 'unknown')
-            schema_summary.append(f"Source: {ds_name} (Type: {source_type})")
-
-            # Flatten tables to help LLM find features
-            schemas = ds.get('schemas') or []
-            for schema in schemas:
-                tables = schema.get('tables') or []
-                for table in tables:
-                    t_name = table.get('table_name')
-                    cols_data = table.get('columns') or []
-                    cols = [c.get('column_name') for c in cols_data if c.get('column_name')]
-                    
-                    if cols:
-                        schema_summary.append(f" - Table '{t_name}': {cols}")
-
-        # 2. Define Strict Output Template
-        # Fits the 'rgen' spec for ML intent types
+        # 2. Define the Perfect ML Response Template
+        # This structure allows for features, labels, and infrastructure strategies.
         response_template = {
             "request_id": payload.get("request_id"),
             "status": "success",
-            "intent_type": "ml", # Explicitly ML intent
+            "intent_type": "ml_orchestration",
             "execution_plan": {
-                "strategy": "hybrid_compute", # Often involves fetching data + inference
-                "type": "ml_inference",
+                "strategy": "sequential_dag", # Options: pushdown, sequential_dag, distributed_training
+                "type": "ml_workflow",
                 "operations": [
                     {
                         "step": 1,
-                        "type": "model_inference",
-                        "operation_type": "predict", # or 'train', 'forecast'
-                        "model_details": {
-                            "task_type": "classification", # e.g. regression, forecasting
-                            "target_variable": "churn",    # inferred from prompt
-                            "model_name": "propensity_to_churn_v2" # inferred or default
+                        "operation_type": "feature_extraction",
+                        "description": "Extract features and labels using SQL",
+                        "query": "SELECT ...",
+                        "features": [], # List of independent variables
+                        "labels": [],   # List of target variables
+                        "output_artifact": "training_dataset"
+                    },
+                    {
+                        "step": 2,
+                        "operation_type": "pre_processing",
+                        "compute_engine": "python_kernel",
+                        "description": "Data cleaning, imputation, and train/test split",
+                        "logic": {
+                            "imputation": "mean", # mean, median, mode
+                            "scaling": "standard", # standard, min_max
+                            "split_ratio": 0.8     # 80/20 split
                         },
-                        "input_data": {
-                            "data_source_id": primary_ds_id,
-                            "query": "SELECT * FROM ...", # Data fetching query
-                            "features": ["age", "tenure", "usage"] # inferred features
+                        "dependencies": ["step_1"]
+                    },
+                    {
+                        "step": 3,
+                        "operation_type": "model_execution",
+                        "description": "Train model and evaluate performance",
+                        "parameters": {
+                            "task": "regression", # regression, classification, forecasting
+                            "algorithm": "auto",
+                            "metrics": ["rmse", "r2"] 
                         },
-                        "governance_applied": {
-                            "masking_rules": []
-                        }
+                        "dependencies": ["step_2"]
                     }
                 ]
             },
             "ai_metadata": {
                 "confidence_score": 0.0,
-                "reasoning_steps": []
+                "reasoning_steps": [],
+                "model_task": ""
             }
         }
 
-        # 3. Build the Detailed System Prompt
+        # 3. Build the Architectural System Prompt
         system_prompt = f"""
-        You are the **ML Agent** for RiverGen AI. 
+        You are the **RiverGen ML Architect Agent**. 
+        Your goal is to design a high-fidelity machine learning pipeline plan.
+        Your goal is to generate a machine learning pipeline in valid **JSON** format.
 
-[Image of machine learning workflow diagram]
+        **CORE LOGIC RULES:**
+        1. **Feature/Label Separation**: You MUST explicitly separate input 'features' from target 'labels' in the plan.
+        2. **Strategy Selection**: 
+           - Use 'pushdown' for BigQuery/Snowflake native ML.
+           - Use 'sequential_dag' for standard Python workflows.
+           - Use 'distributed_training' for massive datasets (>1M rows).
+        3. **Pre-processing**: Always include steps for handling NULLs (imputation) and scaling numerical features.
+        4. **Metrics**:
+           - Regression: Use RMSE and R-Squared ($R^2$).
+           - Classification: Use Precision, Recall, F1-Score, and AUC-ROC.
 
-
-        **YOUR TASK:**
-        Generate an Execution Plan for a Machine Learning task (Prediction, Forecasting, or Classification).
+        
 
         **INPUT CONTEXT:**
-        - User Prompt: "{payload.get('user_prompt')}"
-        - Data Sources: {json.dumps(schema_summary)}
-        - User Context: {json.dumps(payload.get('user_context', {}))}
-
-        **ML LOGIC RULES:**
-        1. **Task Identification**: Analyze the prompt to determine the task.
-           - "Predict churn" -> Classification (Target: churn/status)
-           - "Forecast revenue" -> Time Series Forecasting (Target: revenue)
-           - "Estimate LTV" -> Regression (Target: ltv_amount)
-
-        2. **Feature Selection**: Look at the provided Schema (Tables & Columns). Select relevant columns to be used as `features` for the model.
-           - *Example*: If predicting 'sales', select 'date', 'region', 'product_id'.
-
-        3. **Compute Strategy**:
-           - If the Data Source is **BigQuery** or **Snowflake**, prefer SQL-based ML syntax in the query (e.g., `ML.PREDICT` or `SELECT ... CALL!`).
-           - If the Data Source is a **Database (Postgres)** or **File (S3)**, assume the data must be fetched first (`SELECT ...`) and passed to an external model service.
-
-        4. **Governance**: Ensure PII (Personally Identifiable Information) like 'email' or 'ssn' is NOT used as a feature unless explicitly required and allowed by governance.
-
-        **OUTPUT FORMAT:**
-        Return ONLY valid JSON matching the exact template below. Fill in `model_details` and `input_data` fields intelligently.
+        - User Prompt: "{user_prompt}"
+        - Data Schema: {json.dumps(data_sources)}
+        - ML Params: {json.dumps(ml_params)}
+        - User Context: {json.dumps(user_context)}
 
         **OUTPUT TEMPLATE:**
         {json.dumps(response_template, indent=2)}
         """
 
-        # 4. Inject Feedback (Self-Correction Logic)
+        # 4. Inject Feedback for Self-Correction
         if feedback:
-            system_prompt += f"""
-
-            🚨 **CRITICAL: FIX PREVIOUS ERROR** 🚨
-            Your previous plan was rejected by the QA Judge.
-            **FEEDBACK:** "{feedback}"
-
-            **INSTRUCTIONS FOR FIX:**
-            - If the target variable was wrong, correct it.
-            - If you selected columns that don't exist in the schema, remove them.
-            - If the task type (e.g., 'classification' vs 'regression') was mismatched, fix it.
-            """
+            system_prompt += f"\n\n🚨 **CRITICAL REVISION NEEDED:** {feedback}"
 
         # 5. LLM Execution
         completion = client.chat.completions.create(
-            model=config.MODEL_NAME, # ✅ Use config.MODEL_NAME
-            messages=[
-                {"role": "system", "content": system_prompt},
-                # Avoid passing full payload if large; prompt + schema summary is usually sufficient
-                {"role": "user", "content": f"Request ID: {payload.get('request_id')}"}
-            ],
-            temperature=0,
+            model=config.MODEL_NAME,
+            messages=[{"role": "system", "content": system_prompt}],
+            temperature=0.1,
             response_format={"type": "json_object"}
         )
 
-        # 6. Parse & Hydrate
-        lean_response = clean_and_parse_json(completion.choices[0].message.content)
-        
-        # Telemetry
+        # 6. Parse & Finalize Telemetry
+        lean_response = json.loads(completion.choices[0].message.content)
         generation_time_ms = int((time.time() - start_time) * 1000)
         
-        # Ensure metadata exists
         if "ai_metadata" not in lean_response:
             lean_response["ai_metadata"] = {}
-            
+        
         lean_response["ai_metadata"]["generation_time_ms"] = generation_time_ms
-        lean_response["ai_metadata"]["model"] = config.MODEL_NAME
+        lean_response["ai_metadata"]["model_used"] = config.MODEL_NAME
 
         return lean_response
 
     except Exception as e:
-        logger.error(f"ML Agent Failed: {e}", exc_info=True)
-        return {"error": f"ML Agent Failed: {str(e)}"}
+        logger.error(f"ML Agent Error: {str(e)}", exc_info=True)
+        return {"error": f"ML Planning Failed: {str(e)}"}
