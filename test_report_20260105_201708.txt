@@ -1,0 +1,114 @@
+================================================================================
+RIVERGEN API TEST EXECUTION REPORT
+================================================================================
+Generated: 2026-01-05 20:17:08
+
+EXECUTION SUMMARY
+--------------------------------------------------------------------------------
+Total Tests: 4
+Successful: 3 (75.0%)
+Failed: 1 (25.0%)
+Average Response Time: 4.22 seconds
+
+DETAILED TEST RESULTS
+================================================================================
+
+Test 1: TEST-001 - Top Customers by Revenue
+--------------------------------------------------------------------------------
+Description: Original request - Top 10 customers by revenue this quarter
+Timestamp: 2026-01-05T20:16:47.278865
+Status: ERROR
+HTTP Status Code: 400
+Response Time: 6.3 seconds
+User Prompt: Show me top 10 customers by revenue this quarter
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Error Details:
+{
+  "detail": "Plan generation failed validation after maximum retries. \n\n\ud83d\uded1 REASON: The SQL query contains incorrect logic for quarter comparison and does not properly limit the results to the top 10 customers."
+}
+
+
+Test 2: TEST-002 - Customer Count by Region
+--------------------------------------------------------------------------------
+Description: Aggregation query - Count customers grouped by region
+Timestamp: 2026-01-05T20:16:54.581476
+Status: SUCCESS
+HTTP Status Code: 200
+Response Time: 3.61 seconds
+User Prompt: How many customers are in each region? Show me a breakdown by region
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Response Details:
+  - Request ID: req-test-002
+  - Execution ID: exec-67890
+  - Status: success
+  - Intent Type: analytical_query
+  - Intent Summary: Generate a report of customers grouped by region
+  - AI Metadata:
+    * Generation Time: 588 ms
+    * Confidence Score: 1.0
+    * Explanation: RLS policy applied: Only customers from regions accessible to user with ID 1 are included...
+  - Execution Plan: Present
+
+
+Test 3: TEST-003 - High Revenue Customers Filter
+--------------------------------------------------------------------------------
+Description: Filter query - Customers with revenue above 10000
+Timestamp: 2026-01-05T20:16:59.189422
+Status: SUCCESS
+HTTP Status Code: 200
+Response Time: 3.75 seconds
+User Prompt: Find all customers with revenue greater than 10000 and show their names and regions
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Response Details:
+  - Request ID: req-test-003
+  - Execution ID: exec-67890
+  - Status: success
+  - Intent Type: analytical_query
+  - Intent Summary: Find all customers with revenue greater than 10000 and show their names and regions
+  - AI Metadata:
+    * Generation Time: 685 ms
+    * Confidence Score: 1.0
+    * Explanation: This query does not modify data and does not require RLS injection as it is a read operation....
+  - Execution Plan: Present
+
+
+Test 4: TEST-004 - Customer Revenue Statistics
+--------------------------------------------------------------------------------
+Description: Statistical query - Average, min, max revenue analysis
+Timestamp: 2026-01-05T20:17:03.939433
+Status: SUCCESS
+HTTP Status Code: 200
+Response Time: 3.23 seconds
+User Prompt: What is the average, minimum, and maximum revenue across all customers?
+Model Used: meta-llama/llama-4-maverick-17b-128e-instruct
+
+Response Details:
+  - Request ID: req-test-004
+  - Execution ID: exec-67890
+  - Status: success
+  - Intent Type: analytical_query
+  - Intent Summary: Calculate average, minimum, and maximum revenue across all customers with RLS
+  - AI Metadata:
+    * Generation Time: 739 ms
+    * Confidence Score: 1.0
+    * Explanation: RLS is enforced by adding a filter to the customers table: region IN (SELECT region FROM user_access WHERE user_id = 1)...
+  - Execution Plan: Present
+
+
+RESPONSE TIME ANALYSIS
+--------------------------------------------------------------------------------
+TEST-001: 6.30s - error
+TEST-002: 3.61s - success
+TEST-003: 3.75s - success
+TEST-004: 3.23s - success
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+⚠️  Some tests failed. Review error details above.
+
+================================================================================
+END OF REPORT
+================================================================================

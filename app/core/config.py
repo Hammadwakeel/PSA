@@ -21,7 +21,7 @@ class AppConfig:
         self.GROQ_API_KEY = os.getenv("GROQ_API_KEY")
         
         # --- Model Configuration ---
-        self.MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-versatile") # Good practice: Have a fallback
+        self.MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-versatile")  # Good practice: Have a fallback
 
         # --- Runtime Constants (Tunable via Env) ---
         self.DEFAULT_MAX_ROWS = int(os.getenv("DEFAULT_MAX_ROWS", 1000))

@@ -1,0 +1,582 @@
+[
+  {
+    "test_id": "TEST-001",
+    "test_name": "Top Customers by Revenue",
+    "description": "Original request - Top 10 customers by revenue this quarter",
+    "request_payload": {
+      "request_id": "req-test-001",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "Show me top 10 customers by revenue this quarter",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                {
+                  "column": "email",
+                  "condition": "region != {user.attributes.assigned_region}",
+                  "masking_function": "email_mask",
+                  "description": "Mask emails for users outside assigned region"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:34.767002",
+    "status": "error",
+    "response": null,
+    "error": {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "data_sources",
+            0,
+            "governance_policies",
+            "column_masking",
+            "rules",
+            0
+          ],
+          "msg": "Input should be a valid string",
+          "input": {
+            "column": "email",
+            "condition": "region != {user.attributes.assigned_region}",
+            "masking_function": "email_mask",
+            "description": "Mask emails for users outside assigned region"
+          }
+        }
+      ]
+    },
+    "response_time_seconds": 0.01,
+    "http_status_code": 422
+  },
+  {
+    "test_id": "TEST-002",
+    "test_name": "Customer Count by Region",
+    "description": "Aggregation query - Count customers grouped by region",
+    "request_payload": {
+      "request_id": "req-test-002",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "How many customers are in each region? Show me a breakdown by region",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                {
+                  "column": "email",
+                  "condition": "region != {user.attributes.assigned_region}",
+                  "masking_function": "email_mask",
+                  "description": "Mask emails for users outside assigned region"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:35.777419",
+    "status": "error",
+    "response": null,
+    "error": {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "data_sources",
+            0,
+            "governance_policies",
+            "column_masking",
+            "rules",
+            0
+          ],
+          "msg": "Input should be a valid string",
+          "input": {
+            "column": "email",
+            "condition": "region != {user.attributes.assigned_region}",
+            "masking_function": "email_mask",
+            "description": "Mask emails for users outside assigned region"
+          }
+        }
+      ]
+    },
+    "response_time_seconds": 0.01,
+    "http_status_code": 422
+  },
+  {
+    "test_id": "TEST-003",
+    "test_name": "High Revenue Customers Filter",
+    "description": "Filter query - Customers with revenue above 10000",
+    "request_payload": {
+      "request_id": "req-test-003",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "Find all customers with revenue greater than 10000 and show their names and regions",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                {
+                  "column": "email",
+                  "condition": "region != {user.attributes.assigned_region}",
+                  "masking_function": "email_mask",
+                  "description": "Mask emails for users outside assigned region"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:36.792419",
+    "status": "error",
+    "response": null,
+    "error": {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "data_sources",
+            0,
+            "governance_policies",
+            "column_masking",
+            "rules",
+            0
+          ],
+          "msg": "Input should be a valid string",
+          "input": {
+            "column": "email",
+            "condition": "region != {user.attributes.assigned_region}",
+            "masking_function": "email_mask",
+            "description": "Mask emails for users outside assigned region"
+          }
+        }
+      ]
+    },
+    "response_time_seconds": 0.01,
+    "http_status_code": 422
+  },
+  {
+    "test_id": "TEST-004",
+    "test_name": "Customer Revenue Statistics",
+    "description": "Statistical query - Average, min, max revenue analysis",
+    "request_payload": {
+      "request_id": "req-test-004",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "What is the average, minimum, and maximum revenue across all customers?",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                {
+                  "column": "email",
+                  "condition": "region != {user.attributes.assigned_region}",
+                  "masking_function": "email_mask",
+                  "description": "Mask emails for users outside assigned region"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-maverick-17b-128e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:37.798486",
+    "status": "error",
+    "response": null,
+    "error": {
+      "detail": [
+        {
+          "type": "string_type",
+          "loc": [
+            "body",
+            "data_sources",
+            0,
+            "governance_policies",
+            "column_masking",
+            "rules",
+            0
+          ],
+          "msg": "Input should be a valid string",
+          "input": {
+            "column": "email",
+            "condition": "region != {user.attributes.assigned_region}",
+            "masking_function": "email_mask",
+            "description": "Mask emails for users outside assigned region"
+          }
+        }
+      ]
+    },
+    "response_time_seconds": 0.01,
+    "http_status_code": 422
+  }
+]

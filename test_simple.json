@@ -1,0 +1,73 @@
+{
+    "request_id": "req-test-001",
+    "execution_id": "exec-test-001",
+    "timestamp": "2025-01-15T10:00:00Z",
+    "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": ["analyst", "sales"],
+        "permissions": ["read:customers", "read:orders"],
+        "attributes": {
+            "assigned_region": "US-WEST",
+            "department": "Sales"
+        }
+    },
+    "user_prompt": "Show me top 10 customers by revenue this quarter",
+    "model_name": "openai/gpt-oss-120b",
+    "data_sources": [
+        {
+            "data_source_id": 1,
+            "name": "PostgreSQL Production",
+            "type": "postgresql",
+            "schemas": [
+                {
+                    "schema_name": "public",
+                    "tables": [
+                        {
+                            "table_name": "customers",
+                            "table_type": "table",
+                            "columns": [
+                                {"column_name": "id", "column_type": "integer", "is_nullable": false, "is_primary_key": true},
+                                {"column_name": "name", "column_type": "varchar(255)", "is_nullable": false},
+                                {"column_name": "revenue", "column_type": "decimal(10,2)", "is_nullable": true},
+                                {"column_name": "region", "column_type": "varchar(50)", "is_nullable": true},
+                                {"column_name": "email", "column_type": "varchar(255)", "is_nullable": false, "pii": true}
+                            ]
+                        },
+                        {
+                            "table_name": "orders",
+                            "table_type": "table",
+                            "columns": [
+                                {"column_name": "order_id", "column_type": "integer", "is_nullable": false, "is_primary_key": true},
+                                {"column_name": "customer_id", "column_type": "integer", "is_nullable": false, "is_foreign_key": true},
+                                {"column_name": "order_date", "column_type": "date", "is_nullable": false},
+                                {"column_name": "total_amount", "column_type": "decimal(10,2)", "is_nullable": false}
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "governance_policies": {
+                "row_level_security": {
+                    "enabled": true,
+                    "rules": [
+                        {
+                            "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                            "description": "Users can only see customers in their assigned regions"
+                        }
+                    ]
+                },
+                "column_masking": {
+                    "enabled": true,
+                    "rules": ["email"]
+                }
+            }
+        }
+    ],
+    "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+    }
+}
+

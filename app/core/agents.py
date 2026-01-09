@@ -15,6 +15,24 @@ except ImportError:
     get_groq_client = lambda: None
     get_config = lambda: type('Config', (), {'MODEL_NAME': 'openai/gpt-oss-120b'})()
 
+# ✅ 2. Import prompt functions
+from app.core.prompts import (
+    get_router_agent_prompt,
+    get_stream_agent_prompt,
+    get_sql_agent_prompt,
+    get_vector_store_agent_prompt,
+    get_multi_source_agent_prompt,
+    get_nosql_agent_prompt,
+    get_big_data_agent_prompt,
+    get_ml_agent_prompt,
+    get_multi_source_judge_prompt,
+    get_vector_judge_prompt,
+    get_nosql_judge_prompt,
+    get_sql_judge_prompt,
+    get_ml_judge_prompt,
+    get_general_qa_judge_prompt
+)
+
 # Setup structured logging
 logging.basicConfig(
     level=logging.INFO, 
@@ -38,6 +56,47 @@ def clean_and_parse_json(raw_content: str) -> Dict[str, Any]:
         except json.JSONDecodeError as e:
             logger.error(f"JSON Parsing Failed. Raw content sample: {raw_content[:200]}...")
             raise ValueError(f"LLM returned invalid JSON format: {str(e)}")
+
+# ==============================================================================
+# 🛠️ HELPER: Validate Visualization Config (Text Suggestions)
+# ==============================================================================
+def validate_visualizations(viz_config: List[str], is_write_operation: bool = False) -> List[str]:
+    """
+    Validates and ensures visualization config has 2-5 text suggestions.
+    Returns empty list for write operations.
+    Expects simple text strings describing what to plot and graph name.
+    """
+    if is_write_operation:
+        return []
+    
+    if not isinstance(viz_config, list):
+        logger.warning("visualization_config is not a list, defaulting to empty")
+        return []
+    
+    # Filter out invalid entries - should be strings
+    valid_viz = []
+    for viz in viz_config:
+        if isinstance(viz, str) and viz.strip():
+            valid_viz.append(viz.strip())
+        elif isinstance(viz, dict):
+            # Handle legacy format - convert to text
+            graph_type = viz.get("type", "chart")
+            title = viz.get("title", "Visualization")
+            description = viz.get("description", "")
+            text = f"{title} ({graph_type})"
+            if description:
+                text += f": {description}"
+            valid_viz.append(text)
+    
+    # Ensure we have 2-5 visualizations
+    if len(valid_viz) < 2:
+        logger.warning(f"Only {len(valid_viz)} valid visualizations found, minimum is 2. Returning empty list.")
+        return []
+    elif len(valid_viz) > 5:
+        logger.warning(f"Found {len(valid_viz)} visualizations, truncating to 5.")
+        return valid_viz[:5]
+    
+    return valid_viz
 
 # ==============================================================================
 # 1. MASTER ROUTER AGENT
@@ -71,28 +130,7 @@ def router_agent(full_payload: Dict[str, Any]) -> Dict[str, Any]:
         "context_roles": full_payload.get("user_context", {}).get("roles", [])
     }
 
-    system_prompt = """
-    You are the **Master Router** for RiverGen AI.
-    Route the request based on Data Source Counts and Types.
-
-    **ROUTING RULES (STRICT):**
-    1. **Multi-Source**: If `data_source_count` > 1 -> SELECT `multi_source_agent` (IMMEDIATELY).
-    2. **Streaming**: If prompt mentions 'consume', 'topic', 'kafka', or 'stream' -> SELECT `stream_agent`.
-    3. **Single Source Logic**:
-       - Type 'postgresql', 'oracle', 'mysql', 'sqlserver' -> `sql_agent`
-       - Type 'mongodb', 'dynamodb', 'redis', 'cassandra' -> `nosql_agent`
-       - Type 'snowflake', 'bigquery', 'redshift', 's3' -> `big_data_agent`
-       - Type 'pinecone', 'weaviate', 'vector' -> `vector_store_agent`
-    4. **Machine Learning**: If prompt mentions 'train', 'model', 'predict' -> SELECT `ml_agent`.
-    
-    **OUTPUT FORMAT:**
-    Return ONLY valid JSON:
-    {
-        "selected_agent": "agent_name",
-        "confidence": 1.0,
-        "reasoning": "Brief explanation"
-    }
-    """
+    system_prompt = get_router_agent_prompt()
 
     try:
         completion = client.chat.completions.create(
@@ -130,17 +168,66 @@ def router_agent(full_payload: Dict[str, Any]) -> Dict[str, Any]:
         # Define empty usage for fallback scenarios
         empty_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         
-        # Fallback Logic
+        # Fallback Logic - Try to route based on data source type
         if len(data_sources) > 1:
             return {
                 "selected_agent": "multi_source_agent", 
                 "confidence": 0.5, 
-                "reasoning": "Fallback: Multiple sources.",
+                "reasoning": "Fallback: Multiple sources detected.",
                 "usage": empty_usage
             }
+        
+        # Single source fallback routing
+        if data_sources:
+            primary_source = data_sources[0]
+            source_type = primary_source.get("type", "unknown").lower()
+            
+            # SQL databases
+            if source_type in ['postgresql', 'mysql', 'mariadb', 'sqlserver', 'oracle']:
+                return {
+                    "selected_agent": "sql_agent",
+                    "confidence": 0.6,
+                    "reasoning": f"Fallback: SQL database type '{source_type}' detected.",
+                    "usage": empty_usage
+                }
+            # NoSQL databases
+            elif source_type in ['mongodb', 'dynamodb', 'cassandra', 'elasticsearch', 'redis']:
+                return {
+                    "selected_agent": "nosql_agent",
+                    "confidence": 0.6,
+                    "reasoning": f"Fallback: NoSQL database type '{source_type}' detected.",
+                    "usage": empty_usage
+                }
+            # Cloud warehouses, storage, file formats, SaaS/APIs
+            elif source_type in ['snowflake', 'bigquery', 'redshift', 'synapse', 'databricks',
+                                's3', 'azure_blob_storage', 'gcs',
+                                'csv', 'excel', 'json', 'parquet', 'orc', 'delta_lake', 'iceberg', 'hudi',
+                                'salesforce', 'hubspot', 'stripe', 'jira', 'servicenow', 'rest_api', 'graphql_api']:
+                return {
+                    "selected_agent": "big_data_agent",
+                    "confidence": 0.6,
+                    "reasoning": f"Fallback: Big data/warehouse/storage type '{source_type}' detected.",
+                    "usage": empty_usage
+                }
+            # Streaming
+            elif source_type == 'kafka':
+                return {
+                    "selected_agent": "stream_agent",
+                    "confidence": 0.6,
+                    "reasoning": "Fallback: Streaming source 'kafka' detected.",
+                    "usage": empty_usage
+                }
+            # Vector databases
+            elif source_type in ['pinecone', 'weaviate']:
+                return {
+                    "selected_agent": "vector_store_agent",
+                    "confidence": 0.6,
+                    "reasoning": f"Fallback: Vector database type '{source_type}' detected.",
+                    "usage": empty_usage
+                }
             
         return {
-            "error": "Routing Failed", 
+            "error": "Routing Failed - Unknown data source type", 
             "selected_agent": "error_handler",
             "usage": empty_usage
         }
@@ -230,44 +317,22 @@ def stream_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any
             "ai_metadata": {
                 "confidence_score": 0.0,
                 "reasoning_steps": []
-            }
+            },
+            "visualization_config": [
+                "Line Chart: Real-time event count over time windows",
+                "Area Chart: Moving average of transaction values",
+                "Bar Chart: Event distribution by category"
+            ]
         }
 
         # 3. System Prompt
-        system_prompt = f"""
-        You are the **Stream Agent** for RiverGen AI. 
-        Generate high-fidelity Kafka Streams or KSQL configurations.
-        
-        **INPUT CONTEXT:**
-        - User Prompt: "{payload.get('user_prompt')}"
-        - Available Streams: {chr(10).join(schema_summary)}
-        - Current Date: {datetime.now().strftime("%Y-%m-%d")}
-
-        **STRICT EXECUTION RULES:**
-
-        1. **Temporal Windowing**: 
-           - If "windowing", "time windows", or specific durations (e.g., "per minute") are mentioned, set `windowing.enabled: true`. 
-           - Default `size_seconds` is 60.
-
-        2. **Analytical Logic**: 
-           - "Moving average" -> `analytics.calculate_moving_average: true`.
-           - "Anomalies" / "Outliers" -> `analytics.anomaly_detection: true`.
-
-        3. **Payload Filtering**: 
-           - Distill filters (e.g., "only event_type login") into `filter_expression`. 
-           - **HALLUCINATION CHECK**: ONLY use fields from: {', '.join(known_fields)}.
-
-        4. **Consumer Mapping**: 
-           - Map the schema "Topic" to the `query_payload.topic` field.
-           - If prompt implies historical analysis (e.g., "replay", "from start"), set `offset_strategy` to 'earliest'.
-
-        **OUTPUT FORMAT:**
-        Return ONLY a valid JSON object matching the template exactly.
-        {json.dumps(response_template, indent=2)}
-        """
-
-        if feedback:
-            system_prompt += f"\n\n🚨 **FIX PREVIOUS ERROR**: {feedback}"
+        system_prompt = get_stream_agent_prompt(
+            user_prompt=payload.get('user_prompt'),
+            schema_summary=schema_summary,
+            known_fields=known_fields,
+            response_template=response_template,
+            feedback=feedback
+        )
 
         # 4. LLM Execution
         completion = client.chat.completions.create(
@@ -292,6 +357,12 @@ def stream_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any
             
         lean_response["ai_metadata"]["generation_time_ms"] = generation_time_ms
         lean_response["ai_metadata"]["model"] = config.MODEL_NAME
+        
+        # Validate and set visualizations for stream analytics
+        if "visualization_config" in lean_response:
+            lean_response["visualization"] = validate_visualizations(lean_response["visualization_config"], False)
+        else:
+            lean_response["visualization"] = []
 
         return lean_response
 
@@ -338,32 +409,169 @@ def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
 
         for ds in data_sources:
             ds_name = ds.get('name', 'Unknown Source')
+            schema_name_list = []
             # Handle potentially missing 'schemas' key or None value
             schemas = ds.get('schemas') or []
             
             for schema in schemas:
+                schema_name = schema.get('schema_name', 'default')
                 # Handle potentially missing 'tables' key or None value
                 tables = schema.get('tables') or []
                 for table in tables:
                     t_name = table.get('table_name')
+                    table_type = table.get('table_type', 'table')
                     # Handle potentially missing 'columns' key or None value
                     cols_data = table.get('columns') or []
-                    cols = [c.get('column_name') for c in cols_data if c.get('column_name')]
+                    cols = []
+                    for c in cols_data:
+                        col_name = c.get('column_name')
+                        col_type = c.get('column_type', 'unknown')
+                        is_pii = c.get('pii', False)
+                        cols.append(f"{col_name} ({col_type})" + (" [PII]" if is_pii else ""))
                     
                     if cols:
-                        schema_summary.append(f"Table: {t_name} | Columns: {', '.join(cols)}")
+                        schema_summary.append(f"Schema: {schema_name} | Table: {t_name} ({table_type}) | Columns: {', '.join(cols)}")
+                        schema_name_list.append(schema_name)
 
-            # 🔒 Governance Injection
+            # 🔒 Comprehensive Governance Policy Extraction
             policies = ds.get('governance_policies', {})
             if policies:
+                # Row-Level Security (RLS) Processing
                 rls = policies.get("row_level_security", {})
                 if rls.get("enabled"):
-                    # Explicitly construct the mandatory injection string
-                    governance_instructions.append(
-                        f"⚠️ MANDATORY RLS FOR '{ds_name}': You MUST add the following filter to the 'customers' table: "
-                        f"`region IN (SELECT region FROM user_access WHERE user_id = {user_id})`. "
-                        f"Inject the literal value {user_id}."
-                    )
+                    rls_rules = rls.get("rules", [])
+                    for rule in rls_rules:
+                        condition = rule.get("condition", "")
+                        description = rule.get("description", "")
+                        # Replace context variables with actual values
+                        # {user_id} -> actual user_id, {user.attributes.X} -> actual attribute values
+                        processed_condition = condition
+                        if "{user_id}" in processed_condition:
+                            processed_condition = processed_condition.replace("{user_id}", str(user_id))
+                        for attr_key, attr_value in context_vars.get("attributes", {}).items():
+                            attr_pattern = f"{{user.attributes.{attr_key}}}"
+                            if attr_pattern in processed_condition:
+                                processed_condition = processed_condition.replace(attr_pattern, f"'{attr_value}'" if isinstance(attr_value, str) else str(attr_value))
+                        
+                        # Determine which tables this RLS applies to based on condition
+                        # Check if condition references specific tables/columns from schema
+                        applicable_tables = []
+                        for schema in schemas:
+                            for table in schema.get('tables', []):
+                                t_name = table.get('table_name')
+                                # If condition mentions table name or common column patterns, apply to this table
+                                if t_name.lower() in condition.lower() or any(col.get('column_name', '').lower() in condition.lower() for col in table.get('columns', [])):
+                                    applicable_tables.append(t_name)
+                        
+                        if applicable_tables:
+                            tables_str = ", ".join(applicable_tables)
+                            # Check if condition references system tables - if so, emphasize literal substitution
+                            if "user_access" in processed_condition.lower() or ("SELECT" in processed_condition.upper() and "user_access" in processed_condition.lower()):
+                                # This is a subquery that needs to be replaced with literal
+                                assigned_region = context_vars.get('attributes', {}).get('assigned_region', '')
+                                governance_instructions.append(
+                                    f"⚠️ CRITICAL RLS FOR '{ds_name}' (Tables: {tables_str}): "
+                                    f"The condition '{condition}' references a system table 'user_access' which DOES NOT EXIST in the database schema. "
+                                    f"You MUST replace this subquery with a LITERAL VALUE from user context. "
+                                    f"Based on user context (assigned_region='{assigned_region}'), replace it with: `region = '{assigned_region}'` "
+                                    f"or `region IN ('{assigned_region}')`. NEVER use subqueries to non-existent tables. "
+                                    f"Description: {description}"
+                                )
+                            else:
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY RLS FOR '{ds_name}' (Tables: {tables_str}): "
+                                    f"You MUST apply this filter in WHERE clause: {processed_condition}. "
+                                    f"Description: {description}"
+                                )
+                        else:
+                            # Apply to all tables if no specific table mentioned
+                            if "user_access" in processed_condition.lower() or ("SELECT" in processed_condition.upper() and "user_access" in processed_condition.lower()):
+                                assigned_region = context_vars.get('attributes', {}).get('assigned_region', '')
+                                governance_instructions.append(
+                                    f"⚠️ CRITICAL RLS FOR '{ds_name}' (ALL TABLES): "
+                                    f"The condition '{condition}' references a system table 'user_access' which DOES NOT EXIST. "
+                                    f"You MUST replace this subquery with a LITERAL VALUE: `region = '{assigned_region}'` or `region IN ('{assigned_region}')`. "
+                                    f"NEVER use subqueries to non-existent tables. Description: {description}"
+                                )
+                            else:
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY RLS FOR '{ds_name}' (ALL TABLES): "
+                                    f"You MUST apply this filter in WHERE clause: {processed_condition}. "
+                                    f"Description: {description}"
+                                )
+                
+                # Column Masking Processing
+                masking = policies.get("column_masking", {})
+                if masking.get("enabled"):
+                    masking_rules = masking.get("rules", [])
+                    for rule in masking_rules:
+                        if isinstance(rule, dict):
+                            column = rule.get("column", "")
+                            condition = rule.get("condition", "")
+                            masking_function = rule.get("masking_function", "mask")
+                            description = rule.get("description", "")
+                            
+                            # Process condition with context variables
+                            processed_condition = condition
+                            if "{user_id}" in processed_condition:
+                                processed_condition = processed_condition.replace("{user_id}", str(user_id))
+                            for attr_key, attr_value in context_vars.get("attributes", {}).items():
+                                attr_pattern = f"{{user.attributes.{attr_key}}}"
+                                if attr_pattern in processed_condition:
+                                    processed_condition = processed_condition.replace(attr_pattern, f"'{attr_value}'" if isinstance(attr_value, str) else str(attr_value))
+                            
+                            # Generate masking SQL based on masking function and database type
+                            if masking_function == "email_mask":
+                                if db_type.lower() == "postgresql":
+                                    mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE CONCAT(LEFT({column}, 3), '***@', SPLIT_PART({column}, '@', 2)) END"
+                                elif db_type.lower() in ["mysql", "mariadb"]:
+                                    mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE CONCAT(LEFT({column}, 3), '***@', SUBSTRING_INDEX({column}, '@', -1)) END"
+                                elif db_type.lower() == "sqlserver":
+                                    mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE CONCAT(LEFT({column}, 3), '***@', RIGHT({column}, CHARINDEX('@', REVERSE({column})) - 1)) END"
+                                elif db_type.lower() == "oracle":
+                                    mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE SUBSTR({column}, 1, 3) || '***@' || SUBSTR({column}, INSTR({column}, '@') + 1) END"
+                                else:
+                                    mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE '***MASKED***' END"
+                            elif masking_function == "mask":
+                                mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE '***MASKED***' END"
+                            else:
+                                mask_sql = f"CASE WHEN {processed_condition} THEN {column} ELSE '***MASKED***' END"
+                            
+                            # Add specific guidance for email masking
+                            if masking_function == "email_mask":
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {column}): "
+                                    f"In SELECT clause, use proper email masking format that preserves domain part. "
+                                    f"DO NOT use fixed-length SUBSTR like SUBSTR(email, 15) - emails have variable lengths. "
+                                    f"Use this format for {db_type.upper()}: {mask_sql} AS {column}. "
+                                    f"The masking condition '{processed_condition}' determines when to mask (if condition is false, mask the email). "
+                                    f"Description: {description}"
+                                )
+                            else:
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {column}): "
+                                    f"In SELECT clause, use: {mask_sql} AS {column}. "
+                                    f"Description: {description}"
+                                )
+                        elif isinstance(rule, str):
+                            # Simple column name rule - for email, provide proper masking instruction
+                            if rule.lower() == "email":
+                                if db_type.lower() == "postgresql":
+                                    mask_example = "CONCAT(LEFT(email, 3), '***@', SUBSTRING(email, POSITION('@' IN email) + 1))"
+                                elif db_type.lower() in ["mysql", "mariadb"]:
+                                    mask_example = "CONCAT(LEFT(email, 3), '***@', SUBSTRING_INDEX(email, '@', -1))"
+                                else:
+                                    mask_example = "CONCAT(LEFT(email, 3), '***@', SUBSTRING(email, CHARINDEX('@', email) + 1))"
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {rule}): "
+                                    f"Mask email column using proper format. DO NOT use fixed-length SUBSTR. "
+                                    f"Use format like: {mask_example} AS email. Preserve domain part after @ symbol."
+                                )
+                            else:
+                                governance_instructions.append(
+                                    f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {rule}): "
+                                    f"Mask this column in SELECT clause using appropriate masking function."
+                                )
 
         # 3. Lean Template
         lean_template = {
@@ -372,31 +580,21 @@ def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
             "governance_explanation": "<<CONFIRM_RLS>>",
             "confidence_score": 0.0,
             "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
-            "visualization_config": [],
+            "visualization_config": [
+                "Bar Chart: Total sales by product category",
+                "Line Graph: Monthly revenue trend over the past year"
+            ],
             "suggestions": []
         }
 
         # 4. System Prompt (Dialect-Aware)
-        system_prompt = f"""
-        You are the **SQL Agent**. 
-
-        Generate a secure JSON plan for **{db_type.upper()}**.
-
-        **SQL BEST PRACTICES ({db_type.upper()}):**
-        - Use {db_type} specific syntax (e.g., {'SYSDATE' if db_type == 'oracle' else 'CURRENT_DATE'}).
-        - For WRITE/DELETE, wrap in `BEGIN;` and `COMMIT;`.
-        - RLS: {chr(10).join(governance_instructions) if governance_instructions else "None."}
-
-        **SCHEMA:**
-        {chr(10).join(schema_summary)}
-
-        **OUTPUT FORMAT:**
-        Return ONLY a valid JSON object matching the template exactly.
-        {json.dumps(lean_template, indent=2)}
-        """
-
-        if feedback:
-            system_prompt += f"\n🚨 **FIX PREVIOUS ERROR**: {feedback}"
+        system_prompt = get_sql_agent_prompt(
+            db_type=db_type,
+            governance_instructions=governance_instructions,
+            schema_summary=schema_summary,
+            lean_template=lean_template,
+            feedback=feedback
+        )
 
         # 5. Execute LLM Call
         completion = client.chat.completions.create(
@@ -445,7 +643,7 @@ def sql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
                     "governance_applied": {"rls_rules": governance_instructions}
                 }]
             },
-            "visualization": lean_response.get("visualization_config", []),
+            "visualization": validate_visualizations(lean_response.get("visualization_config", []), op_type == "write"),
             "ai_metadata": {
                 "generation_time_ms": generation_time_ms,
                 "confidence_score": lean_response.get("confidence_score", 0.0),
@@ -527,38 +725,15 @@ def vector_store_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
         }
 
         # 3. System Prompt
-        system_prompt = f"""
-        You are the **Vector Store Agent**. 
-        
-        **OBJECTIVE:**
-        Generate a valid vector search configuration for {db_type.upper()}.
-        
-        **INPUT CONTEXT:**
-        - User Prompt: "{payload.get('user_prompt')}"
-        - Default Top-K: {default_top_k}
-        
-        **AVAILABLE SCHEMA:**
-        {chr(10).join(schema_summary)}
-        
-        **VALID FILTERS:**
-        {json.dumps(valid_metadata_fields)}
-
-        **STRICT RULES:**
-        1. **Target Index**: You MUST use the exact 'Index' name from the Available Schema.
-        2. **Vector Column**: You MUST identify the column with type 'vector(...)'.
-        3. **Query Text**: 
-           - If the user provides a search query (e.g., "find shoes"), use it.
-           - If the prompt is generic (e.g., "query vector"), use the **entire user prompt** as the query text.
-           - NEVER leave this empty.
-        4. **Filtering**: Only filter on 'Valid Filters'. If a requested filter is missing, ignore it and note in reasoning.
-
-        **OUTPUT FORMAT:**
-        Return ONLY a valid JSON object matching this structure:
-        {json.dumps(lean_template, indent=2)}
-        """
-
-        if feedback:
-            system_prompt += f"\n🚨 FIX PREVIOUS ERROR: {feedback}"
+        system_prompt = get_vector_store_agent_prompt(
+            user_prompt=payload.get('user_prompt'),
+            db_type=db_type,
+            default_top_k=default_top_k,
+            schema_summary=schema_summary,
+            valid_metadata_fields=valid_metadata_fields,
+            lean_template=lean_template,
+            feedback=feedback
+        )
 
         # 4. LLM Generation
         completion = client.chat.completions.create(
@@ -704,18 +879,79 @@ def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
                     if cols:
                         schema_summary.append(f"SOURCE (ID {ds_id}) [{ds_type}] '{ds_name}' -> Table: {t_name} | Columns: {', '.join(cols)}")
 
-            # Governance
+            # Governance - Enhanced for Multi-Source
             policies = ds.get('governance_policies', {})
             if policies:
+                # Row-Level Security (RLS) Processing
                 rls = policies.get("row_level_security", {})
                 if rls.get("enabled"):
-                    # CRITICAL FIX: Explicitly tell LLM to replace the table reference with a literal
-                    governance_instructions.append(
-                        f"⚠️ RLS FOR '{ds_name}': You must filter by region. "
-                        f"DO NOT query 'user_access' table directly. "
-                        f"Instead, INJECT the literal value: `region IN (SELECT region FROM (VALUES ('US-East'), ('EU-West')) AS user_access(region))` "
-                        f"OR simply `region = 'US-East'` based on context."
-                    )
+                    rls_rules = rls.get("rules", [])
+                    for rule in rls_rules:
+                        condition = rule.get("condition", "")
+                        description = rule.get("description", "")
+                        # Replace context variables with actual values
+                        processed_condition = condition
+                        if "{user_id}" in processed_condition:
+                            processed_condition = processed_condition.replace("{user_id}", str(user_id))
+                        for attr_key, attr_value in context_vars.get("attributes", {}).items():
+                            attr_pattern = f"{{user.attributes.{attr_key}}}"
+                            if attr_pattern in processed_condition:
+                                processed_condition = processed_condition.replace(attr_pattern, f"'{attr_value}'" if isinstance(attr_value, str) else str(attr_value))
+                        
+                        # For multi-source, use VALUES clause or literal substitution if system table referenced
+                        if "user_access" in processed_condition.lower() or "SELECT" in processed_condition.upper():
+                            # Replace subquery with literal values from context
+                            governance_instructions.append(
+                                f"⚠️ MANDATORY RLS FOR '{ds_name}' (Source ID {ds_id}): "
+                                f"Apply filter: {processed_condition}. "
+                                f"If condition references system tables like 'user_access', replace with literal values from context: {json.dumps(context_vars)}. "
+                                f"Use fully qualified table names (e.g., {ds_name}.schema.table) when applying RLS. "
+                                f"Description: {description}"
+                            )
+                        else:
+                            governance_instructions.append(
+                                f"⚠️ MANDATORY RLS FOR '{ds_name}' (Source ID {ds_id}): "
+                                f"You MUST apply this filter in WHERE clause: {processed_condition}. "
+                                f"Use fully qualified table names (e.g., {ds_name}.schema.table). "
+                                f"Description: {description}"
+                            )
+                
+                # Column Masking Processing
+                masking = policies.get("column_masking", {})
+                if masking.get("enabled"):
+                    masking_rules = masking.get("rules", [])
+                    for rule in masking_rules:
+                        if isinstance(rule, dict):
+                            column = rule.get("column", "")
+                            condition = rule.get("condition", "")
+                            masking_function = rule.get("masking_function", "mask")
+                            description = rule.get("description", "")
+                            
+                            # Process condition with context variables
+                            processed_condition = condition
+                            if "{user_id}" in processed_condition:
+                                processed_condition = processed_condition.replace("{user_id}", str(user_id))
+                            for attr_key, attr_value in context_vars.get("attributes", {}).items():
+                                attr_pattern = f"{{user.attributes.{attr_key}}}"
+                                if attr_pattern in processed_condition:
+                                    processed_condition = processed_condition.replace(attr_pattern, f"'{attr_value}'" if isinstance(attr_value, str) else str(attr_value))
+                            
+                            # Generate masking SQL (use standard SQL that works across databases)
+                            if masking_function == "email_mask":
+                                mask_sql = f"CASE WHEN {processed_condition} THEN {ds_name}.{column} ELSE CONCAT(LEFT({ds_name}.{column}, 3), '***@', SUBSTRING({ds_name}.{column}, CHARINDEX('@', {ds_name}.{column}) + 1)) END"
+                            else:
+                                mask_sql = f"CASE WHEN {processed_condition} THEN {ds_name}.{column} ELSE '***MASKED***' END"
+                            
+                            governance_instructions.append(
+                                f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {column}): "
+                                f"In SELECT clause, use: {mask_sql} AS {column}. "
+                                f"Description: {description}"
+                            )
+                        elif isinstance(rule, str):
+                            governance_instructions.append(
+                                f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}' (Column: {rule}): "
+                                f"Mask this column in SELECT clause using appropriate masking function."
+                            )
 
         # 2. Lean Template (Force 'trino_sql' type for correct Judging)
         lean_template = {
@@ -753,39 +989,20 @@ def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
             },
             "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
             "suggestions": ["<<SUGGESTION>>"],
-            "visualization_config": []
+            "visualization_config": [
+                "Bar Chart: Total revenue by customer segment across sources",
+                "Line Graph: Sales trend comparison between regions"
+            ]
         }
 
         # 3. System Prompt
-        system_prompt = f"""
-        You are the **Multi-Source Agent** for RiverGen AI.
-        
-        **OBJECTIVE:**
-        Generate a **Hybrid Execution Plan** to federate data.
-        
-        **INPUT CONTEXT:**
-        - Schema: {chr(10).join(schema_summary)}
-        - Governance: {chr(10).join(governance_instructions) if governance_instructions else "None."}
-        - Literals: {json.dumps(context_vars)}
-
-        **CRITICAL RULES:**
-        1. **Topology Check**: 
-           - If `Orders` table lacks `product_id`, DO NOT join it to `Products`.
-           - Instead, calculate "Customer Metrics" (Orders+Customers) and "Product Metrics" (Sales+Products) as **separate operations**.
-        
-        2. **System Tables**: 
-           - Replace `user_access` with the literal values provided in context (e.g., `WHERE region = '...'`).
-        
-        3. **Addressing**: 
-           - Use Fully Qualified Names: `datasource_name.schema_name.table_name` (e.g. `postgresql_production.public.customers`).
-        
-        **OUTPUT FORMAT:**
-        Return ONLY a valid JSON object matching the Lean Template exactly.
-        {json.dumps(lean_template, indent=2)}
-        """
-
-        if feedback:
-            system_prompt += f"\n🚨 FIX PREVIOUS ERROR: {feedback}"
+        system_prompt = get_multi_source_agent_prompt(
+            schema_summary=schema_summary,
+            governance_instructions=governance_instructions,
+            context_vars=context_vars,
+            lean_template=lean_template,
+            feedback=feedback
+        )
 
         # 4. LLM Call & Hydration
         completion = client.chat.completions.create(
@@ -809,9 +1026,7 @@ def multi_source_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[st
         
         # Dynamic Values
         ai_confidence = lean_response.get("confidence_score", 0.0)
-        viz_config = lean_response.get("visualization_config")
-        if not isinstance(viz_config, list):
-            viz_config = []
+        viz_config = validate_visualizations(lean_response.get("visualization_config", []), False)
 
         final_plan = {
             "request_id": payload.get("request_id"),
@@ -904,363 +1119,44 @@ def llm_judge(original_payload: Dict[str, Any], generated_plan: Dict[str, Any]) 
         })
         
         # 3. Specialized Prompts
-        multi_source_judge_prompt = f"""
-    You are the **Multi-Source Federation Judge** for RiverGen AI. 
-    
-    
-    You validate federated execution plans that combine data across SQL databases, NoSQL databases, and cloud storage (S3, Parquet, Snowflake, etc.).
+        user_prompt = original_payload.get("user_prompt")
+        
+        multi_source_judge_prompt = get_multi_source_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan
+        )
 
-    INPUT:
-    1. User Prompt:
-    "{original_payload.get("user_prompt")}"
-    2. Valid Schema (Queryable Sources):
-    {json.dumps(valid_schema_context)}
-    3. Proposed Execution Plan:
-    {json.dumps(generated_plan, indent=2)}
+        vector_judge_prompt = get_vector_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan
+        )
 
-    RULES:
+        nosql_judge_prompt = get_nosql_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan
+        )
 
-    ─────────────────────────────
-    1) SCHEMA AUTHORITY & HALLUCINATION
-    ─────────────────────────────
-    - All table references MUST exist in Valid Schema.
-    - SQL or query references to unknown tables/columns → REJECT.
-    - Fully Qualified Names (FQN) required for SQL: `source.schema.table` or aliased equivalent.
-    - S3/NoSQL object references must match provided schema/path exactly.
-    - If a source is claimed as dropped, it MUST NOT appear in any query.
+        sql_judge_prompt = get_sql_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan,
+            compute_engine=generated_plan.get('execution_plan', {}).get('operations', [{}])[0].get('compute_engine', 'unknown')
+        )
 
-    ─────────────────────────────
-    2) DIALECT & SYNTAX COMPLIANCE
-    ─────────────────────────────
-    - SQL queries must be valid for their declared dialect (PostgreSQL, MySQL, Trino, etc.).
-    - No database-specific proprietary constructs (PL/SQL, T-SQL) unless wrapped in pass-through.
-    - No unsafe operations (e.g., unqualified cross joins, unsupported NoSQL filters).
+        ml_judge_prompt = get_ml_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan
+        )
 
-    ─────────────────────────────
-    3) GOVERNANCE & RLS (CRITICAL UPDATE)
-    ─────────────────────────────
-    - RLS, masking, or row-level filters must be applied where required.
-    - **VALIDATION EXCEPTION**: If the plan replaces a system table reference (e.g., `user_access`) with a **Literal Filter** (e.g., `WHERE region = 'US-East'`) or a **CTE/VALUES clause**, this IS VALID. Do NOT reject it for missing the system table.
-    - Enforcement should be pushed down into the query if supported.
-    - If RLS is missing for a source that requires it → REJECT.
-
-    ─────────────────────────────
-    4) FEDERATION & JOIN LOGIC
-    ─────────────────────────────
-    - **Topology Check**: Do NOT allow joins if the schema does not support them (e.g., joining `Orders` to `Products` without a `product_id` key).
-    - **No Cross Joins**: Unqualified joins (Cartesian products) are strictly FORBIDDEN.
-    - If no join key exists, the plan MUST generate separate operations or use `"SAFE_PARTIAL": true` and document in `limitations`.
-    - Metrics requested by the user must be computed when possible; otherwise, explain in `limitations`.
-
-    ─────────────────────────────
-    5) DROPPED & PARTIAL SOURCES
-    ─────────────────────────────
-    - If a source cannot be queried (schema missing, unsupported type), it must be listed in `dropped_sources`.
-    - Limitations or partial results must be documented in `validation.notes` or `limitations`.
-
-    ─────────────────────────────
-    REQUIRED OUTPUT
-    ─────────────────────────────
-    Return ONLY JSON matching this structure exactly:
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    Do NOT include any extra text.
-    """
-
-        vector_judge_prompt = f"""
-    You are the **Vector Store Judge** for RiverGen AI. You validate vector similarity search plans (Pinecone, Weaviate, etc.).
-
-    INPUT:
-    1. User Prompt:
-    "{original_payload.get("user_prompt")}"
-    2. Valid Schema (indexes and vector columns):
-    {json.dumps(valid_schema_context)}
-    3. Proposed Execution Plan:
-    {json.dumps(generated_plan, indent=2)}
-
-    RULES:
-    1) REQUIRED VECTOR PARAMETERS:
-    - `index_name` and `vector_column` must exist in Valid Schema.
-    - `search_params` must include:
-        * `metric` (cosine, euclidean, etc.)
-        * `queries` (non-empty array) OR `embedding_required = true`
-        * `top_k` (positive integer)
-    - `query_vector` may be empty only if `embedding_required = true`.
-
-    2) METADATA FILTERS:
-    - Only allowed fields from Valid Schema.
-    - Document any omitted filters in `validation.notes`.
-
-    3) GOVERNANCE:
-    - RLS/masking must be applied if defined in schema.
-
-    4) SAFE_PARTIAL:
-    - Approve if query returns safe fields and missing fields are documented.
-
-    OUTPUT:
-    Return ONLY JSON:
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    No extra text.
-    """
-
-        nosql_judge_prompt = f"""
-    You are the **NoSQL Quality Assurance Judge** for RiverGen AI. You validate NoSQL execution plans (MongoDB, DynamoDB, Redis, Elasticsearch).
-
-    INPUT:
-    1. User Prompt:
-    "{original_payload.get("user_prompt")}"
-    2. Valid Schema (collections/tables & fields):
-    {json.dumps(valid_schema_context)}
-    3. Proposed Execution Plan:
-    {json.dumps(generated_plan, indent=2)}
-
-    RULES:
-    1) HALLUCINATION CHECK:
-    - Any collection/table/field not in Valid Schema → REJECT.
-    - Include step_id in feedback.
-
-    2) DIALECT-SPECIFIC VALIDATION:
-    - MongoDB: `find`/`aggregate` must be valid JSON-like docs.
-    - DynamoDB: Check KeyConditionExpression, FilterExpression.
-    - Redis/FT.SEARCH: Index names and field filters must exist.
-    - Elasticsearch: JSON DSL must be valid.
-
-    3) GOVERNANCE:
-    - RLS/masking enforcement must be documented if applicable.
-
-    4) SAFE_PARTIAL:
-    - Approve if only safe fields are returned and missing fields documented.
-
-    OUTPUT:
-    Return ONLY JSON:
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    No extra text.
-    """
-
-        sql_judge_prompt = f"""
-    You are the **SQL Quality Assurance Judge** for RiverGen AI. You validate SQL execution plans for correctness, safety, and schema alignment.
-
-    INPUT:
-    1. User Prompt:
-    "{original_payload.get("user_prompt")}"
-    2. Valid Schema (tables & columns):
-    {json.dumps(valid_schema_context)}
-    3. Proposed Execution Plan:
-    {json.dumps(generated_plan, indent=2)}
-    4. Target Data Source Engine:
-    "{generated_plan.get('compute_engine')}"  # e.g., postgres, mysql, oracle, sqlserver, cassandra
-
-    RULES:
-    1) HALLUCINATION CHECK:
-    - Any table/column not in Valid Schema → REJECT.
-    - Include step_id in feedback.
-
-    2) SYNTAX & DIALECT CHECK:
-    - SQL must be valid for the declared engine/dialect.
-    - PostgreSQL: standard SQL, interval/date syntax.
-    - MySQL: use `LIMIT`, backticks if needed.
-    - Oracle: use `SYSDATE`, `INTERVAL`, JSON_ARRAYAGG/JSON_OBJECT for nested data.
-    - SQL Server: use `GETDATE()`, `DATEADD`, JSON functions for nesting.
-    - Cassandra CQL: `ALLOW FILTERING` flagged as performance risk.
-
-    - If the SQL uses syntax from a different engine than the data source → REJECT.
-    - Provide specific feedback on syntax errors or dialect mismatches.
-
-    3) GOVERNANCE:
-    - Confirm RLS or masking is applied if defined.
-    - If policy references missing objects, accept only if documented.
-
-    4) PARTIAL DATA:
-    - Approve if safe and explain missing fields in `validation.missing_fields`.
-    - Include notes for performance issues or risky operations.
-
-    OUTPUT:
-    Return ONLY a JSON object:
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    Do NOT include any extra text.
-    """
-
-
-        judge_output_schema = {
-          "approved": "boolean",
-          "score": "float",
-          "feedback": "string",
-          "validation": {
-            "feature_issues": [],
-            "execution_issues": [],
-            "ml_best_practice_violations": [],
-            "notes": []
-          }
-        }
-
-       
-        ml_judge_prompt = f"""
-You are the **RiverGen ML Quality Assurance Judge**.
-
-You validate ML execution plans for:
-- correctness
-- ML best practices
-- execution safety
-- schema alignment
-
-Your decision is FINAL.
-
-────────────────────────────────────────
-INPUTS
-────────────────────────────────────────
-1. User Prompt:
-   "{original_payload.get("user_prompt")}"
-
-2. Valid Data Schema:
-   {json.dumps(valid_schema_context)}
-
-3. Proposed ML Execution Plan:
-   {json.dumps(generated_plan, indent=2)}
-
-────────────────────────────────────────
-VALIDATION RULES (HARD FAILS)
-────────────────────────────────────────
-
-### 1️⃣ Feature / Label Validation
-REJECT if:
-- Target column appears in features
-- ID / primary key is used as a feature without justification
-- Features or labels do not exist in schema
-
-### 2️⃣ Strategy Validation
-REJECT if:
-- CSV/file-based workflows use anything other than `sequential_dag`
-- Distributed strategy used without dataset size justification
-
-### 3️⃣ Execution Correctness
-REJECT if:
-- DuckDB queries reference CSVs as tables
-- `read_csv_auto()` (or equivalent) is NOT used for CSV ingestion
-- SQL syntax is invalid for the declared engine
-
-### 4️⃣ Compute Engine Validation
-REJECT if:
-- Pandas is used as a model training engine
-- ML training lacks a defined ML framework (e.g., sklearn)
-
-### 5️⃣ Preprocessing Completeness
-REJECT if:
-- Missing value handling is absent
-- Scaling/normalization is missing for numeric features
-- Train/test split is missing or ambiguous
-
-### 6️⃣ Metrics Enforcement
-REJECT if:
-- Regression tasks do not include BOTH RMSE and R²
-- Classification tasks do not include Precision, Recall, F1, AUC-ROC
-
-### 7️⃣ Artifact & Reproducibility
-REJECT if:
-- Model output path is missing
-- Evaluation report path is missing
-- random_state is missing for splits
-
-────────────────────────────────────────
-SCORING GUIDELINES
-────────────────────────────────────────
-- 1.0 → Production-ready, fully correct
-- 0.8–0.9 → Minor issues, safe to auto-fix
-- <0.8 → Must be regenerated
-
-────────────────────────────────────────
-OUTPUT FORMAT (JSON ONLY)
-────────────────────────────────────────
-Return ONLY:
-{json.dumps(judge_output_schema, indent=2)}
-
-NO extra text.
-"""
-
-
-
-        general_qa_judge_prompt = f"""
-    You are the **Quality Assurance Judge** for RiverGen AI. Evaluate any execution plan (SQL, NoSQL, vector) for:
-    - Schema compliance
-    - Hallucinations
-    - Governance & RLS enforcement
-    - Dialect-specific syntax
-    - Performance & safety
-    - Partial safe fulfillment
-
-    INPUT:
-    1. User Prompt:
-    "{original_payload.get("user_prompt")}"
-    2. Valid Schema:
-    {json.dumps(valid_schema_context)}
-    3. Proposed Execution Plan:
-    {json.dumps(generated_plan, indent=2)}
-
-    RULES:
-    1) Any reference to non-existent table/collection/column → reject.
-    2) Vector operations must include index_name, vector_column, top_k, and queries or embedding_required.
-    3) SQL/NoSQL syntax must match the target engine.
-    4) Governance policies must be enforced or documented if omitted.
-    5) Safe partial plans are approvable with missing fields documented.
-    6) Risky operations (full scans, ALLOW FILTERING, large top_k) must include performance warnings.
-
-    OUTPUT (STRICT JSON):
-    {{
-    "approved": boolean,
-    "feedback": "string",
-    "score": float,
-    "governance_enforcement": {{ }},
-    "validation": {{
-        "missing_fields": [],
-        "dropped_sources": [],
-        "notes": [],
-        "performance_warnings": []
-    }}
-    }}
-    Do NOT include any text outside the JSON.
-    """
+        general_qa_judge_prompt = get_general_qa_judge_prompt(
+            user_prompt=user_prompt,
+            valid_schema_context=valid_schema_context,
+            generated_plan=generated_plan
+        )
 
         # 4. Select the proper prompt
         if plan_type == "vector_search":
@@ -1362,16 +1258,63 @@ def nosql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]
                     f"Collection/Key: {table.get('table_name')} | Fields: {', '.join(fields)}"
                 )
 
-        # Governance Context
+        # Governance Context - Enhanced for NoSQL
         governance_instructions = []
+        user_context = payload.get('user_context', {})
+        user_id = user_context.get("user_id", 0)
+        context_vars = {
+            "user_id": user_id,
+            "org_id": user_context.get("organization_id"),
+            "attributes": user_context.get("attributes", {})
+        }
+        
         policies = primary_ds.get("governance_policies", {})
         if policies:
-            # Check for Masking
+            # Row-Level Security (RLS) for NoSQL
+            rls = policies.get("row_level_security", {})
+            if rls.get("enabled"):
+                rls_rules = rls.get("rules", [])
+                for rule in rls_rules:
+                    condition = rule.get("condition", "")
+                    description = rule.get("description", "")
+                    # Process condition with context variables
+                    processed_condition = condition
+                    if "{user_id}" in processed_condition:
+                        processed_condition = processed_condition.replace("{user_id}", str(user_id))
+                    for attr_key, attr_value in context_vars.get("attributes", {}).items():
+                        attr_pattern = f"{{user.attributes.{attr_key}}}"
+                        if attr_pattern in processed_condition:
+                            processed_condition = processed_condition.replace(attr_pattern, f"'{attr_value}'" if isinstance(attr_value, str) else str(attr_value))
+                    
+                    governance_instructions.append(
+                        f"⚠️ MANDATORY RLS FOR '{ds_name}' ({db_type.upper()}): "
+                        f"You MUST apply this filter to your query: {processed_condition}. "
+                        f"Description: {description}. "
+                        f"Apply using appropriate {db_type.upper()} query syntax (e.g., $match for MongoDB, FilterExpression for DynamoDB, WHERE for Cassandra, query DSL for Elasticsearch)."
+                    )
+            
+            # Column Masking
             masking = policies.get("column_masking", {})
             if masking.get("enabled"):
-                governance_instructions.append(
-                    f"⚠️ MASKING REQUIRED: You must exclude or mask these fields if present: {masking.get('rules', 'See Schema')}"
-                )
+                masking_rules = masking.get("rules", [])
+                masked_fields = []
+                for rule in masking_rules:
+                    if isinstance(rule, dict):
+                        masked_fields.append(rule.get("column", ""))
+                    elif isinstance(rule, str):
+                        masked_fields.append(rule)
+                
+                if masked_fields:
+                    governance_instructions.append(
+                        f"⚠️ MANDATORY COLUMN MASKING FOR '{ds_name}': "
+                        f"You must exclude or mask these fields in your query: {', '.join(masked_fields)}. "
+                        f"For MongoDB: use $project to exclude. For DynamoDB: exclude from ProjectionExpression. "
+                        f"For Elasticsearch: exclude from _source. For Cassandra: do not SELECT these columns."
+                    )
+                else:
+                    governance_instructions.append(
+                        f"⚠️ MASKING REQUIRED: You must exclude or mask fields as specified in schema PII markers."
+                    )
 
         # 2. Define "Lean" Template
         lean_template = {
@@ -1388,82 +1331,22 @@ def nosql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]
             },
             "confidence_score": 0.0,
             "reasoning_steps": ["<<STEP_1>>", "<<STEP_2>>"],
-            "suggestions": ["<<Q1>>"]
+            "suggestions": ["<<Q1>>"],
+            "visualization_config": [
+                "Bar Chart: Description of what to plot",
+                "Line Graph: Another visualization suggestion"
+            ]
         }
 
-        system_prompt = f"""
-    You are the **NoSQL Agent** for RiverGen AI.
-
-    OBJECTIVE:
-    Generate a valid, safe, and auditable query for a **{db_type.upper()}** NoSQL database (Cassandra, MongoDB, DynamoDB, Redis, Elasticsearch, etc.) based on the user prompt and the available schema.
-
-    INPUT CONTEXT:
-    - User Prompt: "{payload.get('user_prompt')}"
-    - Max Rows: {max_rows}
-    - AVAILABLE SCHEMA:
-    {chr(10).join(schema_summary) if schema_summary else "No schema provided."}
-    - GOVERNANCE:
-    {chr(10).join(governance_instructions) if governance_instructions else "No active policies."}
-
-    STRICT RULES (MANDATORY)
-    1. SCHEMA AUTHORITY (ABSOLUTE):
-    - You MUST NOT reference any collection/table/field that does not appear in AVAILABLE SCHEMA.
-    - If the user asks for an object not present, add it to `validation.missing_fields`.
-    - Do NOT invent nested structures or relationships.
-
-    2. QUERYABILITY & DROPPED SOURCES:
-    - If a source or collection exists in payload but is NOT present in AVAILABLE SCHEMA, treat it as NON-QUERYABLE.
-    - Do NOT generate queries against non-queryable sources; instead, list them under `validation.dropped_sources` and explain why.
-
-    3. DIALECT-SPECIFIC SYNTAX (EXAMPLES — obey exact dialect):
-    - **MongoDB**: Use `db.collection.find({...})` or aggregation pipeline `db.collection.aggregate([...])`.
-    - **Cassandra**: Use CQL `SELECT ... FROM keyspace.table WHERE ...;` and **avoid** `ALLOW FILTERING` where possible; if used, add a `performance_warnings` note.
-    - **DynamoDB**: Use the expression-style syntax appropriate for DynamoDB (e.g., KeyConditionExpression, FilterExpression).
-    - **Redis (Search)**: Use `FT.SEARCH index "query" FILTER ...` or appropriate native commands.
-    - **Elasticsearch**: Use a JSON DSL query body with `match`, `bool`, `range`, etc.
-
-    4. DEGRADATION & PARTIAL FULFILLMENT:
-    - If the full user intent is impossible (missing fields/tables), produce:
-        a) A best-effort query that returns whatever is available.
-        b) `validation.missing_fields`: list of requested objects not present.
-        c) `validation.notes`: human-readable explanation of what was omitted and why.
-        d) `suggestions`: concrete next steps (e.g., "provide orders schema", "create secondary index on customer_id").
-
-    5. GOVERNANCE & RLS:
-    - If governance_instructions reference tables/objects not in AVAILABLE SCHEMA:
-        - Attempt literal substitution using Context Literals if present.
-        - Otherwise, document omission under `validation.notes` and `governance_enforcement` with status `omitted`.
-    - If RLS can be applied, show exact filter to be injected.
-
-    6. TEMPORAL & METADATA MAPPING:
-    - Map natural language time windows (e.g., "last 90 days") to explicit range filters using the available date/time fields.
-    - If no date field exists, include a `validation.notes` entry explaining inability to apply time filter.
-
-    7. PERFORMANCE & SAFETY:
-    - Flag expensive patterns (Cassandra `ALLOW FILTERING`, unbounded scans, missing indexes) in `performance_warnings`.
-    - Prefer query patterns that respect partition/primary keys for the given NoSQL engine.
-
-    8. OUTPUT STRUCTURE (MANDATORY):
-    - Return ONLY a JSON object that matches the provided lean template exactly.
-    - The JSON MUST include a `validation` block with:
-        - `missing_fields`: [],
-        - `dropped_sources`: [],
-        - `notes`: [],
-        - `performance_warnings`: []
-    - Also provide `governance_enforcement` and `suggestions`.
-
-    9. TRANSPARENCY:
-    - If you cannot compute an aggregate (e.g., Lifetime Value) due to missing data, do NOT attempt to compute it; instead add a clear explanation and a suggested data requirement.
-
-    10. Do not use any placeholders like date use actual date functions or fixed dates.
-    OUTPUT FORMAT:
-    Return ONLY a valid JSON object matching this LEAN structure:
-    {json.dumps(lean_template, indent=2)}
-    """
-
-
-        if feedback:
-            system_prompt += f"\n🚨 FIX PREVIOUS ERROR: {feedback}"
+        system_prompt = get_nosql_agent_prompt(
+            user_prompt=payload.get('user_prompt'),
+            db_type=db_type,
+            max_rows=max_rows,
+            schema_summary=schema_summary,
+            governance_instructions=governance_instructions,
+            lean_template=lean_template,
+            feedback=feedback
+        )
 
         # 4. LLM Call & Telemetry
         completion = client.chat.completions.create(
@@ -1521,7 +1404,7 @@ def nosql_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]
                     }
                 ]
             },
-            "visualization": None,
+            "visualization": validate_visualizations(lean_response.get("visualization_config", []), False),
             "ai_metadata": {
                 "model": config.MODEL_NAME,
                 "input_tokens": input_tokens,
@@ -1573,38 +1456,100 @@ def big_data_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, A
         primary_ds_id = data_sources[0].get("data_source_id") if data_sources else None
 
         for ds in data_sources:
-            # Capture the specific type (e.g., 'snowflake', 's3') to guide the prompt
+            # Capture the specific type to guide the prompt
             ds_type = ds.get('type', 'unknown')
             ds_name = ds.get('name', 'Unknown Source')
             
+            # Define all supported big data types
+            cloud_warehouses = ['snowflake', 'bigquery', 'redshift', 'synapse', 'databricks']
+            cloud_storage = ['s3', 'azure_blob_storage', 'gcs']
+            file_formats = ['csv', 'excel', 'json', 'parquet', 'orc', 'delta_lake', 'iceberg', 'hudi']
+            saas_apis = ['salesforce', 'hubspot', 'stripe', 'jira', 'servicenow', 'rest_api', 'graphql_api']
+            
             # Update hint if it's a known big data type
-            if ds_type in ['snowflake', 'bigquery', 'redshift', 's3', 'databricks']:
+            if ds_type in cloud_warehouses + cloud_storage + file_formats + saas_apis:
                 source_type_hint = ds_type
+                
+                # Set default dialect based on type
+                if ds_type in cloud_warehouses:
+                    if ds_type == 'synapse':
+                        source_type_hint = 'synapse'  # SQL Server-like
+                    elif ds_type == 'databricks':
+                        source_type_hint = 'databricks'  # Spark SQL
+                    # snowflake, bigquery, redshift already have specific dialects
+                elif ds_type in cloud_storage + file_formats:
+                    # For data lakes and file formats, default to DuckDB or Trino
+                    source_type_hint = 'duckdb'  # Can be overridden to 'trino' if needed
+                elif ds_type in saas_apis:
+                    # SaaS/APIs use their own query languages (SOQL, JQL, REST, GraphQL)
+                    source_type_hint = ds_type
 
             policies = ds.get('governance_policies') or {}
             if policies:
                 governance_context.append(f"Source '{ds_name}': {json.dumps(policies)}")
 
+        # 2. Determine operation type and query payload structure based on source type
+        # Get primary source type for template customization
+        primary_ds_type = data_sources[0].get('type', 'unknown') if data_sources else 'unknown'
+        
+        # Determine operation type and query payload structure
+        if primary_ds_type in ['salesforce', 'hubspot', 'stripe', 'jira', 'servicenow', 'rest_api', 'graphql_api']:
+            # SaaS/API sources use API call structure
+            operation_type = "api_call"
+            query_payload_template = {
+                "language": "api",
+                "dialect": primary_ds_type,
+                "method": "GET",  # or POST, PUT, DELETE
+                "endpoint": "<<API_ENDPOINT>>",
+                "headers": {},
+                "params": {},
+                "body": {}
+            }
+            if primary_ds_type == 'salesforce':
+                query_payload_template["language"] = "soql"
+                query_payload_template["statement"] = "<<SOQL_QUERY>>"
+            elif primary_ds_type == 'jira':
+                query_payload_template["language"] = "jql"
+                query_payload_template["jql"] = "<<JQL_QUERY>>"
+            elif primary_ds_type == 'graphql_api':
+                query_payload_template["language"] = "graphql"
+                query_payload_template["query"] = "<<GRAPHQL_QUERY>>"
+                query_payload_template["variables"] = {}
+        elif primary_ds_type in ['csv', 'excel', 'json', 'parquet', 'orc', 'delta_lake', 'iceberg', 'hudi']:
+            # File format sources
+            operation_type = "file_query"
+            query_payload_template = {
+                "language": "sql",
+                "dialect": "duckdb",  # or 'trino'
+                "statement": "<<SQL_QUERY_WITH_FILE_FUNCTIONS>>",
+                "file_path": "<<FILE_PATH>>",
+                "file_format": primary_ds_type
+            }
+        else:
+            # SQL-based sources (cloud warehouses, data lakes)
+            operation_type = "source_query"
+            query_payload_template = {
+                "language": "sql",
+                "dialect": source_type_hint if source_type_hint != 'unknown' else 'snowflake',
+                "statement": "<<SQL_QUERY>>"
+            }
+        
         # 2. Define Strict Output Template
         response_template = {
             "request_id": payload.get("request_id"),
             "status": "success",
-            "intent_type": "query", # or 'transform'
+            "intent_type": "query",  # or 'transform', 'api_call'
             "execution_plan": {
-                "strategy": "pushdown", # or 'internal_compute' for S3
-                "type": "sql_query",    # or 'file_query'
+                "strategy": "pushdown" if primary_ds_type not in ['csv', 'excel', 'json'] else "internal_compute",
+                "type": "sql_query" if operation_type != "api_call" else "api_query",
                 "operations": [
                     {
                         "step": 1,
-                        "type": "source_query", # or 'file_read'
+                        "type": operation_type,  # 'source_query', 'file_query', 'api_call'
                         "operation_type": "read",
                         "data_source_id": primary_ds_id,
-                        "query": "SELECT ...",
-                        "query_payload": {
-                            "language": "sql",
-                            "dialect": "snowflake", # or 'duckdb', 'bigquery'
-                            "statement": "SELECT ..."
-                        },
+                        "query": "<<QUERY_OR_API_CALL>>",
+                        "query_payload": query_payload_template,
                         "governance_applied": {
                             "rls_rules": [],
                             "masking_rules": []
@@ -1615,56 +1560,23 @@ def big_data_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, A
             "ai_metadata": {
                 "confidence_score": 0.0,
                 "reasoning_steps": []
-            }
+            },
+            "visualization_config": [
+                "Bar Chart: Total sales aggregated by region",
+                "Line Graph: Time-series trend over partitioned dates"
+            ]
         }
 
         # 3. Build the Detailed System Prompt
         # Note: We pass the full data_sources object (serialized) so the LLM sees the schema structure
-        system_prompt = f"""
-        You are the **Big Data Agent** for RiverGen AI. 
-
-[Image of cloud data warehouse architecture]
-
-
-        **YOUR TASK:**
-        Generate an optimized Execution Plan for a Big Data workload (Cloud Warehouse or Data Lake).
-
-        **INPUT CONTEXT:**
-        - User Prompt: "{payload.get('user_prompt')}"
-        - Data Source Schema: {json.dumps(data_sources)}
-        - Primary Source Type: "{source_type_hint}"
-
-        **GOVERNANCE POLICIES (MUST ENFORCE):**
-        {chr(10).join(governance_context) if governance_context else "No specific policies."}
-
-        **DIALECT & OPTIMIZATION RULES:**
-        1. **Snowflake**: Use `Snowflake` dialect. Support `QUALIFY`, `FLATTEN`, and strictly use defined database/schema names (e.g. `DB.SCHEMA.TABLE`).
-        2. **BigQuery**: Use `BigQuery` standard SQL. Handle nested fields (`record.field`) if present. Use backticks for project.dataset.table.
-        3. **Data Lakes (S3/ADLS/File)**:
-           - Assume compute engine is **DuckDB** or **Trino**.
-           - **Partition Pruning**: If the schema mentions `partition_columns`, YOU MUST filter by them in the `WHERE` clause if the prompt allows (e.g. "last 30 days" -> `date >= ...`).
-           - Use file functions like `read_parquet('s3://...')` if applicable, or standard SQL if the view is abstracted.
-
-        **OUTPUT FORMAT:**
-        Return ONLY valid JSON matching the exact template below. Adjust `dialect` field based on the source type (e.g. 'snowflake', 'bigquery', 'duckdb').
-
-        **OUTPUT TEMPLATE:**
-        {json.dumps(response_template, indent=2)}
-        """
-
-        # 4. Inject Feedback (Self-Correction Logic)
-        if feedback:
-            system_prompt += f"""
-
-            🚨 **CRITICAL: FIX PREVIOUS ERROR** 🚨
-            Your previous plan was rejected by the QA Judge.
-            **FEEDBACK:** "{feedback}"
-
-            **INSTRUCTIONS FOR FIX:**
-            - If you used the wrong dialect (e.g. BigQuery syntax on Snowflake), fix it.
-            - If you missed a partition filter on a large table, ADD IT.
-            - If you hallucinated a path or table, check the schema string again.
-            """
+        system_prompt = get_big_data_agent_prompt(
+            user_prompt=payload.get('user_prompt'),
+            data_sources=data_sources,
+            source_type_hint=source_type_hint,
+            governance_context=governance_context,
+            response_template=response_template,
+            feedback=feedback
+        )
 
         # 5. LLM Execution
         completion = client.chat.completions.create(
@@ -1683,12 +1595,22 @@ def big_data_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, A
         # Telemetry
         generation_time_ms = int((time.time() - start_time) * 1000)
         
+        # Determine if this is a write operation (no visualizations)
+        operations = lean_response.get("execution_plan", {}).get("operations", [])
+        is_write = any(op.get("operation_type") == "write" for op in operations)
+        
         # Ensure metadata exists
         if "ai_metadata" not in lean_response:
             lean_response["ai_metadata"] = {}
             
         lean_response["ai_metadata"]["generation_time_ms"] = generation_time_ms
         lean_response["ai_metadata"]["model"] = config.MODEL_NAME
+        
+        # Validate and set visualizations
+        if "visualization_config" in lean_response:
+            lean_response["visualization"] = validate_visualizations(lean_response["visualization_config"], is_write)
+        else:
+            lean_response["visualization"] = [] if is_write else []
 
         return lean_response
 
@@ -1770,114 +1692,14 @@ def ml_agent(payload: Dict[str, Any], feedback: str = None) -> Dict[str, Any]:
         }
 
         # 3. Build the Architectural System Prompt
-        system_prompt = f"""
-You are the **RiverGen ML Architect Agent**.
-
-Your responsibility is to design a **fully executable, production-safe machine learning pipeline plan** in **valid JSON only**.
-
-This plan will be executed by downstream systems — any ambiguity, invalid syntax, or ML anti-pattern is a FAILURE.
-
-────────────────────────────────────────
-CORE OBJECTIVES
-────────────────────────────────────────
-1. Translate the user request into a correct ML pipeline.
-2. Explicitly separate FEATURES and LABELS.
-3. Select the correct execution STRATEGY and COMPUTE ENGINES.
-4. Enforce ML best practices and execution correctness.
-5. Return ONLY valid JSON that matches the output template.
-
-────────────────────────────────────────
-NON-NEGOTIABLE RULES (CRITICAL)
-────────────────────────────────────────
-
-### 1️⃣ Feature / Label Discipline
-- You MUST explicitly define:
-  - `features`: input columns ONLY
-  - `labels`: target column(s) ONLY
-- NEVER include:
-  - primary keys
-  - surrogate IDs
-  - UUIDs
-  - auto-increment fields  
-  **unless the user explicitly requests it.**
-- If an ID column appears in features, DROP IT and explain in reasoning.
-
-### 2️⃣ Strategy Selection (MANDATORY)
-- Use **sequential_dag** when:
-  - CSV / Parquet / files
-  - Pandas / sklearn workflows
-- Use **pushdown** ONLY for native warehouse ML (BigQuery ML, Snowflake ML).
-- Use **distributed_training** ONLY if dataset size is explicitly >1M rows.
-
-### 3️⃣ Data Source Execution Rules
-- **DuckDB + CSV**:
-  - ALWAYS use `read_csv_auto()` or equivalent.
-  - NEVER reference CSVs as tables.
-  - Example:
-    ```sql
-    SELECT col1 FROM read_csv_auto('s3://bucket/file.csv')
-    ```
-
-- **SQL Sources**:
-  - Use valid dialect syntax.
-  - Do NOT hallucinate tables or columns.
-
-### 4️⃣ Preprocessing (REQUIRED)
-You MUST include:
-- Missing value handling (imputation)
-- Scaling or normalization for numeric features
-- Train / test split with explicit ratio
-- Fixed `random_state` for reproducibility
-
-### 5️⃣ Model Execution Rules
-- Training compute engine MUST be:
-  - `scikit-learn` (or equivalent ML framework)
-- Pandas is NOT a model training engine.
-- Explicitly specify:
-  - algorithm
-  - task type
-  - evaluation metrics
-
-### 6️⃣ Metrics Enforcement
-- **Regression** → RMSE + R² (MANDATORY)
-- **Classification** → Precision, Recall, F1, AUC-ROC (MANDATORY)
-
-### 7️⃣ Output Artifacts (REQUIRED)
-- You MUST specify:
-  - model artifact path
-  - evaluation report path
-
-### 8️⃣ Reasoning Transparency
-- Populate `reasoning_steps`
-- Explicitly justify:
-  - strategy choice
-  - feature selection
-  - algorithm choice
-
-────────────────────────────────────────
-INPUT CONTEXT
-────────────────────────────────────────
-- User Prompt: "{user_prompt}"
-- Data Schema / Sources: {json.dumps(data_sources)}
-- ML Parameters: {json.dumps(ml_params)}
-- User Context: {json.dumps(user_context)}
-
-────────────────────────────────────────
-OUTPUT FORMAT (STRICT)
-────────────────────────────────────────
-Return ONLY valid JSON matching this template exactly:
-{json.dumps(response_template, indent=2)}
-
-DO NOT include explanations outside JSON.
-DO NOT add extra keys.
-DO NOT return partial plans.
-"""
-
-
-
-        # 4. Inject Feedback for Self-Correction
-        if feedback:
-            system_prompt += f"\n\n🚨 **CRITICAL REVISION NEEDED:** {feedback}"
+        system_prompt = get_ml_agent_prompt(
+            user_prompt=user_prompt,
+            data_sources=data_sources,
+            ml_params=ml_params,
+            user_context=user_context,
+            response_template=response_template,
+            feedback=feedback
+        )
 
         # 5. LLM Execution
         completion = client.chat.completions.create(

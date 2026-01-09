@@ -3,20 +3,68 @@ from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 # ==============================================================================
+# ALLOWED MODELS
+# ==============================================================================
+ALLOWED_MODELS = [
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "meta-llama/llama-4-maverick-17b-128e-instruct"
+]
+
+# ==============================================================================
 # 1. ENUMS (Type Safety)
 # ==============================================================================
 class DataSourceType(str, Enum):
+    # SQL Databases
     POSTGRESQL = "postgresql"
     MYSQL = "mysql"
-    ORACLE = "oracle"
+    MARIADB = "mariadb"
     SQLSERVER = "sqlserver"
-    MONGODB = "mongodb"
-    REDIS = "redis"
-    ELASTICSEARCH = "elasticsearch"
+    ORACLE = "oracle"
+    
+    # Cloud Warehouses
     SNOWFLAKE = "snowflake"
     BIGQUERY = "bigquery"
+    REDSHIFT = "redshift"
+    SYNAPSE = "synapse"
+    DATABRICKS = "databricks"
+    
+    # Cloud Storage / Data Lakes
     S3 = "s3"
+    AZURE_BLOB_STORAGE = "azure_blob_storage"
+    GCS = "gcs"  # Google Cloud Storage
+    
+    # File Formats
+    CSV = "csv"
+    EXCEL = "excel"
+    JSON = "json"
+    PARQUET = "parquet"
+    ORC = "orc"
+    DELTA_LAKE = "delta_lake"
+    ICEBERG = "iceberg"
+    HUDI = "hudi"
+    
+    # NoSQL Databases
+    MONGODB = "mongodb"
+    DYNAMODB = "dynamodb"
+    CASSANDRA = "cassandra"
+    ELASTICSEARCH = "elasticsearch"
+    REDIS = "redis"
+    
+    # SaaS / APIs
+    SALESFORCE = "salesforce"
+    HUBSPOT = "hubspot"
+    STRIPE = "stripe"
+    JIRA = "jira"
+    SERVICENOW = "servicenow"
+    REST_API = "rest_api"
+    GRAPHQL_API = "graphql_api"
+    
+    # Streaming
     KAFKA = "kafka"
+    
+    # Vector Databases
     PINECONE = "pinecone"
     WEAVIATE = "weaviate"
 
@@ -132,12 +180,39 @@ class ExecutionRequest(BaseModel):
     
     execution_context: ExecutionContext = Field(default_factory=ExecutionContext)
     
-    include_visualization: bool = Field(True, description="Request chart suggestions")
+    model_name: str = Field(
+        ...,
+        description="LLM model to use for execution. Must be from the allowed list."
+    )
     
     @field_validator('data_sources')
+    @classmethod
     def validate_sources(cls, v):
         if not v:
             raise ValueError("At least one data source is required")
+        
+        # Validate that all data source types are from the supported enum
+        supported_types = [ds_type.value for ds_type in DataSourceType]
+        for source in v:
+            # Handle both dict (during validation) and DataSource model instances
+            if isinstance(source, dict):
+                source_type = source.get('type')
+            else:
+                source_type = source.type if hasattr(source, 'type') else None
+            
+            if source_type and source_type not in supported_types:
+                raise ValueError(
+                    f"Unsupported data source type: '{source_type}'. "
+                    f"Supported types: {', '.join(sorted(supported_types))}"
+                )
+        return v
+    
+    @field_validator('model_name')
+    def validate_model_name(cls, v):
+        if v not in ALLOWED_MODELS:
+            raise ValueError(
+                f"Model '{v}' is not allowed. Allowed models: {', '.join(ALLOWED_MODELS)}"
+            )
         return v
 
 # ==============================================================================
@@ -151,10 +226,21 @@ class AIMetadata(BaseModel):
     # Added model field to match agent output
     model: Optional[str] = None 
 
+class ErrorDetail(BaseModel):
+    """
+    Structured error detail object for error responses.
+    """
+    code: str = Field(..., description="Error code (e.g., WRITE_PERMISSION_DENIED, VALIDATION_ERROR)")
+    message: str = Field(..., description="Human-readable error message")
+    details: Optional[Dict[str, Any]] = Field(None, description="Additional error context/details")
+    suggested_fixes: List[str] = Field(default_factory=list, description="List of suggested fixes or actions")
+
 class ExecutionResponse(BaseModel):
     """
     Standardized response format for the Execution API.
     """
+    model_config = ConfigDict(extra='allow')  # Allow extra fields from service layer
+    
     request_id: str
     status: str = Field(..., description="success, error, or partial")
     
@@ -167,8 +253,12 @@ class ExecutionResponse(BaseModel):
     
     execution_plan: Optional[Dict[str, Any]] = None 
     
-    visualization: Optional[List[Dict[str, Any]]] = None
-    ai_metadata: Optional[AIMetadata] = None
-    suggestions: List[str] = []
+    visualization: Optional[List[Union[str, Dict[str, Any]]]] = None
+    ai_metadata: Optional[Dict[str, Any]] = None  # Changed from AIMetadata to Dict for flexibility
+    suggestions: List[str] = Field(default_factory=list)
     
-    error: Optional[str] = None
+    error: Optional[ErrorDetail] = None  # Only included in error responses
+    meta: Optional[Dict[str, Any]] = None  # Added for execution metadata
+    usage: Optional[Dict[str, Any]] = None  # Only included when present (usually in error responses)
+    warnings: Optional[List[str]] = None  # Only included when present
+    last_feedback: Optional[str] = None  # Only included in error responses

@@ -1,0 +1,628 @@
+[
+  {
+    "test_id": "TEST-001",
+    "test_name": "Top Customers by Revenue",
+    "description": "Original request - Top 10 customers by revenue this quarter",
+    "request_payload": {
+      "request_id": "req-test-001",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "Show me top 10 customers by revenue this quarter",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                "email"
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:47.278865",
+    "status": "error",
+    "response": null,
+    "error": {
+      "detail": "Plan generation failed validation after maximum retries. \n\n\ud83d\uded1 REASON: The SQL query contains incorrect logic for quarter comparison and does not properly limit the results to the top 10 customers."
+    },
+    "response_time_seconds": 6.3,
+    "http_status_code": 400
+  },
+  {
+    "test_id": "TEST-002",
+    "test_name": "Customer Count by Region",
+    "description": "Aggregation query - Count customers grouped by region",
+    "request_payload": {
+      "request_id": "req-test-002",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "How many customers are in each region? Show me a breakdown by region",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                "email"
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:54.581476",
+    "status": "success",
+    "response": {
+      "request_id": "req-test-002",
+      "execution_id": "exec-67890",
+      "plan_id": "plan-req-test-002",
+      "status": "success",
+      "timestamp": "2026-01-05T20:16:57.347258",
+      "intent_type": "analytical_query",
+      "intent_summary": "Generate a report of customers grouped by region",
+      "execution_plan": {
+        "strategy": "pushdown",
+        "type": "sql_query",
+        "operations": [
+          {
+            "step": 1,
+            "operation_type": "read",
+            "compute_engine": "postgresql",
+            "query": "SELECT region, COUNT(*) as customer_count FROM customers WHERE region IN (SELECT region FROM user_access WHERE user_id = 1) GROUP BY region;",
+            "query_payload": {
+              "language": "sql",
+              "dialect": "postgresql",
+              "statement": "SELECT region, COUNT(*) as customer_count FROM customers WHERE region IN (SELECT region FROM user_access WHERE user_id = 1) GROUP BY region;"
+            },
+            "governance_applied": {
+              "rls_rules": [
+                "\u26a0\ufe0f MANDATORY RLS FOR 'PostgreSQL Production': You MUST add the following filter to the 'customers' table: `region IN (SELECT region FROM user_access WHERE user_id = 1)`. Inject the literal value 1."
+              ]
+            }
+          }
+        ]
+      },
+      "visualization": [],
+      "ai_metadata": {
+        "generation_time_ms": 588,
+        "confidence_score": 1.0,
+        "explanation": "RLS policy applied: Only customers from regions accessible to user with ID 1 are included",
+        "reasoning_steps": [
+          "Identified the need for a breakdown of customers by region",
+          "Applied Row-Level Security (RLS) policy to filter customers based on user access"
+        ],
+        "input_tokens": 2370,
+        "output_tokens": 411,
+        "total_tokens": 2781
+      },
+      "suggestions": [],
+      "meta": {
+        "attempts_used": 2,
+        "processing_time_ms": 3589,
+        "router_confidence": 1.0,
+        "judge_score": 1.0
+      }
+    },
+    "error": null,
+    "response_time_seconds": 3.61,
+    "http_status_code": 200
+  },
+  {
+    "test_id": "TEST-003",
+    "test_name": "High Revenue Customers Filter",
+    "description": "Filter query - Customers with revenue above 10000",
+    "request_payload": {
+      "request_id": "req-test-003",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "Find all customers with revenue greater than 10000 and show their names and regions",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                "email"
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:16:59.189422",
+    "status": "success",
+    "response": {
+      "request_id": "req-test-003",
+      "execution_id": "exec-67890",
+      "plan_id": "plan-req-test-003",
+      "status": "success",
+      "timestamp": "2026-01-05T20:17:02.227630",
+      "intent_type": "analytical_query",
+      "intent_summary": "Find all customers with revenue greater than 10000 and show their names and regions",
+      "execution_plan": {
+        "strategy": "pushdown",
+        "type": "sql_query",
+        "operations": [
+          {
+            "step": 1,
+            "operation_type": "read",
+            "compute_engine": "postgresql",
+            "query": "SELECT name, region FROM customers WHERE revenue > 10000",
+            "query_payload": {
+              "language": "sql",
+              "dialect": "postgresql",
+              "statement": "SELECT name, region FROM customers WHERE revenue > 10000"
+            },
+            "governance_applied": {
+              "rls_rules": [
+                "\u26a0\ufe0f MANDATORY RLS FOR 'PostgreSQL Production': You MUST add the following filter to the 'customers' table: `region IN (SELECT region FROM user_access WHERE user_id = 1)`. Inject the literal value 1."
+              ]
+            }
+          }
+        ]
+      },
+      "visualization": [],
+      "ai_metadata": {
+        "generation_time_ms": 685,
+        "confidence_score": 1.0,
+        "explanation": "This query does not modify data and does not require RLS injection as it is a read operation.",
+        "reasoning_steps": [
+          "The user request is to find customers with revenue greater than 10000.",
+          "The required information is name and region, so we select those columns from the customers table.",
+          "The condition for revenue is greater than 10000, so we add a WHERE clause."
+        ],
+        "input_tokens": 2387,
+        "output_tokens": 383,
+        "total_tokens": 2770
+      },
+      "suggestions": [],
+      "meta": {
+        "attempts_used": 2,
+        "processing_time_ms": 3740,
+        "router_confidence": 1.0,
+        "judge_score": 1.0
+      }
+    },
+    "error": null,
+    "response_time_seconds": 3.75,
+    "http_status_code": 200
+  },
+  {
+    "test_id": "TEST-004",
+    "test_name": "Customer Revenue Statistics",
+    "description": "Statistical query - Average, min, max revenue analysis",
+    "request_payload": {
+      "request_id": "req-test-004",
+      "execution_id": "exec-67890",
+      "timestamp": "2025-01-15T10:00:00Z",
+      "user_context": {
+        "user_id": 1,
+        "workspace_id": 5,
+        "organization_id": 10,
+        "roles": [
+          "analyst",
+          "sales"
+        ],
+        "permissions": [
+          "read:customers",
+          "read:orders"
+        ],
+        "attributes": {
+          "assigned_region": "US-WEST",
+          "department": "Sales"
+        }
+      },
+      "user_prompt": "What is the average, minimum, and maximum revenue across all customers?",
+      "data_sources": [
+        {
+          "data_source_id": 1,
+          "name": "PostgreSQL Production",
+          "type": "postgresql",
+          "schemas": [
+            {
+              "schema_name": "public",
+              "tables": [
+                {
+                  "table_name": "customers",
+                  "table_type": "table",
+                  "row_count": 45000,
+                  "indexes": [
+                    "idx_region",
+                    "idx_segment"
+                  ],
+                  "columns": [
+                    {
+                      "column_name": "id",
+                      "column_type": "integer",
+                      "is_nullable": false,
+                      "is_primary_key": true,
+                      "is_foreign_key": false,
+                      "column_comment": "Customer ID"
+                    },
+                    {
+                      "column_name": "name",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "revenue",
+                      "column_type": "decimal(10,2)",
+                      "is_nullable": true,
+                      "is_primary_key": false,
+                      "is_foreign_key": false
+                    },
+                    {
+                      "column_name": "region",
+                      "column_type": "varchar(50)",
+                      "is_nullable": true
+                    },
+                    {
+                      "column_name": "email",
+                      "column_type": "varchar(255)",
+                      "is_nullable": false,
+                      "pii": true
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          "governance_policies": {
+            "row_level_security": {
+              "enabled": true,
+              "rules": [
+                {
+                  "condition": "region IN (SELECT region FROM user_access WHERE user_id = {user_id})",
+                  "description": "Users can only see customers in their assigned regions"
+                }
+              ]
+            },
+            "column_masking": {
+              "enabled": true,
+              "rules": [
+                "email"
+              ]
+            }
+          }
+        }
+      ],
+      "selected_schema_names": [
+        "public"
+      ],
+      "execution_context": {
+        "max_rows": 1000,
+        "timeout_seconds": 30
+      },
+      "model_name": "meta-llama/llama-4-maverick-17b-128e-instruct",
+      "include_visualization": true
+    },
+    "timestamp": "2026-01-05T20:17:03.939433",
+    "status": "success",
+    "response": {
+      "request_id": "req-test-004",
+      "execution_id": "exec-67890",
+      "plan_id": "plan-req-test-004",
+      "status": "success",
+      "timestamp": "2026-01-05T20:17:06.412951",
+      "intent_type": "analytical_query",
+      "intent_summary": "Calculate average, minimum, and maximum revenue across all customers with RLS",
+      "execution_plan": {
+        "strategy": "pushdown",
+        "type": "sql_query",
+        "operations": [
+          {
+            "step": 1,
+            "operation_type": "read",
+            "compute_engine": "postgresql",
+            "query": "BEGIN; SELECT AVG(revenue) AS average_revenue, MIN(revenue) AS min_revenue, MAX(revenue) AS max_revenue FROM customers WHERE region IN (SELECT region FROM user_access WHERE user_id = 1); COMMIT;",
+            "query_payload": {
+              "language": "sql",
+              "dialect": "postgresql",
+              "statement": "BEGIN; SELECT AVG(revenue) AS average_revenue, MIN(revenue) AS min_revenue, MAX(revenue) AS max_revenue FROM customers WHERE region IN (SELECT region FROM user_access WHERE user_id = 1); COMMIT;"
+            },
+            "governance_applied": {
+              "rls_rules": [
+                "\u26a0\ufe0f MANDATORY RLS FOR 'PostgreSQL Production': You MUST add the following filter to the 'customers' table: `region IN (SELECT region FROM user_access WHERE user_id = 1)`. Inject the literal value 1."
+              ]
+            }
+          }
+        ]
+      },
+      "visualization": [],
+      "ai_metadata": {
+        "generation_time_ms": 739,
+        "confidence_score": 1.0,
+        "explanation": "RLS is enforced by adding a filter to the customers table: region IN (SELECT region FROM user_access WHERE user_id = 1)",
+        "reasoning_steps": [
+          "The user requested average, minimum, and maximum revenue across all customers.",
+          "The customers table has a region column that requires RLS filtering.",
+          "The RLS filter is applied using a subquery to ensure only accessible regions are included."
+        ],
+        "input_tokens": 2444,
+        "output_tokens": 358,
+        "total_tokens": 2802
+      },
+      "suggestions": [],
+      "meta": {
+        "attempts_used": 2,
+        "processing_time_ms": 3220,
+        "router_confidence": 1.0,
+        "judge_score": 1.0
+      }
+    },
+    "error": null,
+    "response_time_seconds": 3.23,
+    "http_status_code": 200
+  }
+]

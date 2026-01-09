@@ -1,0 +1,173 @@
+================================================================================
+RIVERGEN API TEST EXECUTION REPORT
+================================================================================
+Generated: 2026-01-05 20:16:38
+
+EXECUTION SUMMARY
+--------------------------------------------------------------------------------
+Total Tests: 4
+Successful: 0 (0.0%)
+Failed: 4 (100.0%)
+Average Response Time: 0.01 seconds
+
+DETAILED TEST RESULTS
+================================================================================
+
+Test 1: TEST-001 - Top Customers by Revenue
+--------------------------------------------------------------------------------
+Description: Original request - Top 10 customers by revenue this quarter
+Timestamp: 2026-01-05T20:16:34.767002
+Status: ERROR
+HTTP Status Code: 422
+Response Time: 0.01 seconds
+User Prompt: Show me top 10 customers by revenue this quarter
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Error Details:
+{
+  "detail": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "data_sources",
+        0,
+        "governance_policies",
+        "column_masking",
+        "rules",
+        0
+      ],
+      "msg": "Input should be a valid string",
+      "input": {
+        "column": "email",
+        "condition": "region != {user.attributes.assigned_region}",
+        "masking_function": "email_mask",
+        "description": "Mask emails for users outside assigned region"
+      }
+    }
+  ]
+}
+
+
+Test 2: TEST-002 - Customer Count by Region
+--------------------------------------------------------------------------------
+Description: Aggregation query - Count customers grouped by region
+Timestamp: 2026-01-05T20:16:35.777419
+Status: ERROR
+HTTP Status Code: 422
+Response Time: 0.01 seconds
+User Prompt: How many customers are in each region? Show me a breakdown by region
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Error Details:
+{
+  "detail": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "data_sources",
+        0,
+        "governance_policies",
+        "column_masking",
+        "rules",
+        0
+      ],
+      "msg": "Input should be a valid string",
+      "input": {
+        "column": "email",
+        "condition": "region != {user.attributes.assigned_region}",
+        "masking_function": "email_mask",
+        "description": "Mask emails for users outside assigned region"
+      }
+    }
+  ]
+}
+
+
+Test 3: TEST-003 - High Revenue Customers Filter
+--------------------------------------------------------------------------------
+Description: Filter query - Customers with revenue above 10000
+Timestamp: 2026-01-05T20:16:36.792419
+Status: ERROR
+HTTP Status Code: 422
+Response Time: 0.01 seconds
+User Prompt: Find all customers with revenue greater than 10000 and show their names and regions
+Model Used: meta-llama/llama-4-scout-17b-16e-instruct
+
+Error Details:
+{
+  "detail": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "data_sources",
+        0,
+        "governance_policies",
+        "column_masking",
+        "rules",
+        0
+      ],
+      "msg": "Input should be a valid string",
+      "input": {
+        "column": "email",
+        "condition": "region != {user.attributes.assigned_region}",
+        "masking_function": "email_mask",
+        "description": "Mask emails for users outside assigned region"
+      }
+    }
+  ]
+}
+
+
+Test 4: TEST-004 - Customer Revenue Statistics
+--------------------------------------------------------------------------------
+Description: Statistical query - Average, min, max revenue analysis
+Timestamp: 2026-01-05T20:16:37.798486
+Status: ERROR
+HTTP Status Code: 422
+Response Time: 0.01 seconds
+User Prompt: What is the average, minimum, and maximum revenue across all customers?
+Model Used: meta-llama/llama-4-maverick-17b-128e-instruct
+
+Error Details:
+{
+  "detail": [
+    {
+      "type": "string_type",
+      "loc": [
+        "body",
+        "data_sources",
+        0,
+        "governance_policies",
+        "column_masking",
+        "rules",
+        0
+      ],
+      "msg": "Input should be a valid string",
+      "input": {
+        "column": "email",
+        "condition": "region != {user.attributes.assigned_region}",
+        "masking_function": "email_mask",
+        "description": "Mask emails for users outside assigned region"
+      }
+    }
+  ]
+}
+
+
+RESPONSE TIME ANALYSIS
+--------------------------------------------------------------------------------
+TEST-001: 0.01s - error
+TEST-002: 0.01s - error
+TEST-003: 0.01s - error
+TEST-004: 0.01s - error
+
+RECOMMENDATIONS
+--------------------------------------------------------------------------------
+⚠️  Some tests failed. Review error details above.
+
+================================================================================
+END OF REPORT
+================================================================================
