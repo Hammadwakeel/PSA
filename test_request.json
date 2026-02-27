@@ -1,0 +1,1 @@
+{"prompt": "Query the orders table in PostgreSQL and return total revenue by month for the last 12 months"}

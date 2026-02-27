@@ -1,62 +1,29 @@
-import os
 import logging
-from functools import lru_cache
+import os
 from dotenv import load_dotenv
-from groq import Groq
 
-# 1. Setup Logging (Essential for Prod)
-logging.basicConfig(level=logging.INFO)
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
-# 2. Load .env only if strictly necessary (Dev mode)
-# In Prod, we expect vars to be set by the orchestrator (K8s/Docker)
-load_dotenv() 
 
-class AppConfig:
-    """
-    Centralized Configuration Management.
-    """
-    def __init__(self):
-        # --- API Keys & Secrets ---
-        self.GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-        
-        # --- Model Configuration ---
-        self.MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/llama-3.3-70b-versatile")  # Good practice: Have a fallback
+class Config:
+    RGEN_EMAIL = os.getenv("RGEN_EMAIL")
+    RGEN_PASSWORD = os.getenv("RGEN_PASSWORD")
+    RGEN_VERIFY = os.getenv("RGEN_VERIFY")
+    GENAI_MODEL = os.getenv("GENAI_MODEL")
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+    LOG_FILE = os.getenv("LOG_FILE", "").strip() or None
 
-        # --- Runtime Constants (Tunable via Env) ---
-        self.DEFAULT_MAX_ROWS = int(os.getenv("DEFAULT_MAX_ROWS", 1000))
-        self.DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", 30))
 
-        self.validate()
+config = Config()
 
-    def validate(self):
-        """Fail fast if critical config is missing."""
-        if not self.GROQ_API_KEY:
-            # Log error before crashing so it appears in CloudWatch/Datadog
-            logger.critical("❌ GROQ_API_KEY is missing from environment variables.")
-            raise ValueError("GROQ_API_KEY must be set.")
-        
-        if not self.MODEL_NAME:
-            logger.warning("⚠️ MODEL_NAME not set. Using default.")
+# Log which config keys are set (values never logged)
+def _config_status():
+    keys = ["RGEN_EMAIL", "RGEN_PASSWORD", "RGEN_VERIFY", "GENAI_MODEL", "GOOGLE_API_KEY", "LOG_LEVEL", "LOG_FILE"]
+    status = {k: "set" if getattr(config, k, None) else "unset" for k in keys}
+    logger.debug("config loaded | %s", status)
 
-# 3. Lazy Loading Pattern (The Fix)
-@lru_cache()
-def get_config():
-    """
-    Creates the config object once and caches it.
-    """
-    return AppConfig()
 
-@lru_cache()
-def get_groq_client():
-    """
-    Initializes the Groq client ONLY when first called.
-    Prevents 'import time' crashes.
-    """
-    config = get_config()
-    try:
-        client = Groq(api_key=config.GROQ_API_KEY)
-        return client
-    except Exception as e:
-        logger.error(f"Failed to initialize Groq Client: {e}")
-        raise
+_config_status()
